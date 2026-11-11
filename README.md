@@ -10,6 +10,7 @@ The retained upstream benchmark code and result records are under `SAG-Benchmark
 dataset/
   musique.json
   musique_corpus.json
+  musique_100_for_ab.json
 
 doc/
   SAG2_Experiment_Program.md
@@ -25,11 +26,13 @@ SAG-Benchmark/
   sag/
 ```
 
-## Current experiment scope
+## Hybrid experiment implementation
 
-The planned study compares a BM25 initial retriever with a BM25 + BGE-M3 RRF hybrid retriever while keeping the Qwen evidence scorer, candidate budget, expansion rules, and evaluation protocol fixed.
+The repository now includes the BM25 + BGE-M3 RRF experiment implementation. It compares the BM25 and hybrid initial retrievers while keeping the Qwen evidence scorer, candidate budget, expansion rules, and evaluation protocol fixed.
 
 The paper's hosted JEV results remain external reference values. A Qwen chat model used through an OpenAI-compatible endpoint is not the same scorer as the JEV model used in the paper.
+
+See [the hybrid experiment guide](SAG-Benchmark/sag2/docs/hybrid-experiment.md) for indexing, embedding-cache construction, paired runs, resume behavior, and result analysis.
 
 ## Environment
 

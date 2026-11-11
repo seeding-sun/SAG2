@@ -7,7 +7,6 @@ import argparse
 import asyncio
 from collections import Counter
 from datetime import UTC, datetime
-import fcntl
 import hashlib
 import json
 import os
@@ -42,6 +41,20 @@ ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
 MODEL = "typesafe/jev-1.13"
 ACTUAL_MODEL = "typesafe/jev-1.13-20260917"
 CONCURRENCY = 20
+
+
+def lock_run_file(stream) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        stream.write("\0")
+        stream.flush()
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def compact_record(row):
@@ -545,5 +558,5 @@ if __name__ == "__main__":
     CONCURRENCY = args.concurrency
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / "run.lock").open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_run_file(lock)
         asyncio.run(main())

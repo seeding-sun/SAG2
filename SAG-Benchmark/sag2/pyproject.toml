@@ -8,10 +8,12 @@ license = { text = "MIT" }
 dependencies = [
     "aiohttp>=3.9",
     "jieba==0.42.1",
+    "numpy>=2.0,<3",
     "pyuca==1.2",
     "python-dotenv>=1.0",
     "regex>=2024.0",
     "tiktoken>=0.12",
+    "tzdata>=2025.2; platform_system == 'Windows'",
 ]
 
 [dependency-groups]

@@ -20,7 +20,7 @@ from functools import lru_cache
 from itertools import islice
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import aiohttp
 import jieba
@@ -927,9 +927,33 @@ class JevClient:
         }
 
 
+class EvidenceScorer(Protocol):
+    async def score(
+        self,
+        query: str,
+        candidates: list[dict],
+        evidence: list[dict],
+        *,
+        context: dict | None = None,
+    ) -> tuple[list[dict], dict]: ...
+
+
+class InitialRetriever(Protocol):
+    name: str
+
+    async def search(
+        self,
+        index: "CorpusIndex",
+        query: str,
+        *,
+        excluded: set[int],
+        limit: int,
+    ) -> tuple[list[dict], dict]: ...
+
+
 async def search_sag2(
     index: CorpusIndex,
-    client: JevClient,
+    client: EvidenceScorer,
     query: str,
     *,
     candidate_k: int = 100,
@@ -937,6 +961,7 @@ async def search_sag2(
     max_hops: int = 2,
     expansion_term_limit: int = 20,
     context: dict | None = None,
+    initial_retriever: InitialRetriever | None = None,
 ) -> dict:
     if not 0 <= max_hops <= 2:
         raise ValueError("SAG2 supports at most two expansion rounds")
@@ -945,6 +970,7 @@ async def search_sag2(
     expanded, seen = set(), set()
     frontier, trace, baseline = [], [], []
     usage = {"requests": 0, "judgments": 0, "input_tokens": 0, "output_tokens": 0, "batches": []}
+    retrieval_usage = None
 
     def ranked() -> list[dict]:
         return sorted(
@@ -953,31 +979,40 @@ async def search_sag2(
 
     expression = index.match_query(query)
     for hop in range(max_hops + 1):
-        if not expression or (hop and not frontier):
-            break
-        terms = index.expansion_terms(query, frontier, expansion_term_limit) if hop else []
-        if hop and not terms:
-            break
-        hits, queries = (
-            index.retrieve_expansion(expression, terms, seen, candidate_k)
-            if hop
-            else (index.retrieve(expression, seen, candidate_k), [])
-        )
+        if hop == 0 and initial_retriever is not None:
+            hits, retrieval_usage = await initial_retriever.search(
+                index, query, excluded=seen, limit=candidate_k
+            )
+            queries, terms = [], []
+        else:
+            if not expression or (hop and not frontier):
+                break
+            terms = index.expansion_terms(query, frontier, expansion_term_limit) if hop else []
+            if hop and not terms:
+                break
+            hits, queries = (
+                index.retrieve_expansion(expression, terms, seen, candidate_k)
+                if hop
+                else (index.retrieve(expression, seen, candidate_k), [])
+            )
         candidates = [
             {**hit, "hop": hop, "fusion_score": 1 / (61 + i)} for i, hit in enumerate(hits)
         ]
-        trace.append(
-            {
-                "stage": "expansion" if hop else "bm25",
-                "hop": hop,
-                "count": len(candidates),
-                "candidate_document_ids": [c["document_id"] for c in candidates],
-                "candidate_ids": [c["id"] for c in candidates],
-                "terms": [term["term"] for term in terms],
-                "term_scores": terms,
-                "expansion_queries": queries,
-            }
-        )
+        trace_entry = {
+            "stage": "expansion"
+            if hop
+            else ("bm25" if initial_retriever is None else initial_retriever.name),
+            "hop": hop,
+            "count": len(candidates),
+            "candidate_document_ids": [c["document_id"] for c in candidates],
+            "candidate_ids": [c["id"] for c in candidates],
+            "terms": [term["term"] for term in terms],
+            "term_scores": terms,
+            "expansion_queries": queries,
+        }
+        if hop == 0 and initial_retriever is not None:
+            trace_entry["retrieval_usage"] = retrieval_usage
+        trace.append(trace_entry)
         if not candidates:
             break
         if hop == 0:
@@ -1031,9 +1066,11 @@ async def search_sag2(
         )
         frontier = [c for c in ranked() if c["id"] not in expanded][:seed_k]
         expanded.update(c["id"] for c in frontier)
+        trace[-1]["frontier_ids"] = [c["id"] for c in frontier]
+        trace[-1]["seed_ids"] = [c["id"] for c in frontier]
     final = ranked()[:candidate_k]
     final = rank_dpp(final[:10], index.diversity_idf) + final[10:]
-    return {
+    result = {
         "candidates": final,
         "baseline": baseline,
         "trace": trace,
@@ -1041,6 +1078,10 @@ async def search_sag2(
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
         "algorithm": "SAG2",
     }
+    if initial_retriever is not None:
+        result["initial_retriever"] = initial_retriever.name
+        result["retrieval_usage"] = retrieval_usage
+    return result
 
 
 def corpus_fingerprint(path: Path) -> str:

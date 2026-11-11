@@ -21,9 +21,10 @@ def main():
             ("summary.json", "summary_sha256"),
         ]:
             assert hashlib.sha256((target / file).read_bytes()).hexdigest() == hashes[key]
-        corpus = ROOT / "dataset" / f"{name}_corpus.json"
+        loader = DatasetLoader(name, ROOT / "dataset")
+        corpus = loader.corpus_path
         assert hashlib.sha256(corpus.read_bytes()).hexdigest() == hashes["corpus_sha256"]
-        questions = DatasetLoader(name, ROOT / "dataset").get_question_records()
+        questions = loader.get_question_records()
         rows = [json.loads(line) for line in (target / "questions.jsonl").read_text().splitlines()]
         assert len(rows) == len(questions) == 1000
         summary = json.loads((target / "summary.json").read_text())

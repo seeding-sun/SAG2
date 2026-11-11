@@ -366,6 +366,8 @@ uv run --offline --group local python scripts/run_sag2_benchmark.py \
 
 Available backends include Qwen Transformers, Jina Transformers and Jina MLX on Apple Silicon. Qwen weights use Apache-2.0; Jina uses CC BY-NC 4.0 and requires additional permission for commercial use. See the [local reranking guide](docs/local-rerank.md) for custom corpora, memory, batch sizes and full ablations.
 
+The optional [hybrid BM25 + BGE-M3 workflow](docs/hybrid-experiment.md) keeps SAG2's evidence scoring and expansion loop while comparing a BM25 initial retriever against BM25+BGE-M3 reciprocal-rank fusion.
+
 ## Repository Layout
 
 ```text

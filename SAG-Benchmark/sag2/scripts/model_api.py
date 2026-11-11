@@ -63,11 +63,14 @@ class RequestJournal:
                 status, raw, error = None, None, None
                 started = time.monotonic()
                 try:
+                    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
                     async with self.session.post(
-                        endpoint, json=payload, headers={"Authorization": f"Bearer {api_key}"}
+                        endpoint, json=payload, headers=headers
                     ) as response:
                         status = response.status
-                        raw = (await response.text()).replace(api_key, "<REDACTED>")
+                        raw = await response.text()
+                        if api_key:
+                            raw = raw.replace(api_key, "<REDACTED>")
                 except (TimeoutError, aiohttp.ClientConnectionError) as exc:
                     error = type(exc).__name__
                 write_json(

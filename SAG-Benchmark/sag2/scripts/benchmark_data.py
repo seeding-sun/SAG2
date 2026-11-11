@@ -6,11 +6,23 @@ from pathlib import Path
 from sample_identity import index_unique_records
 
 
+def resolve_dataset_dir(directory):
+    path = Path(directory)
+    if path.is_dir() and any(path.glob("*_corpus.json")):
+        return path
+    if len(path.parents) >= 3:
+        fallback = path.parents[2] / "dataset"
+        if fallback.is_dir() and any(fallback.glob("*_corpus.json")):
+            return fallback
+    return path
+
+
 class DatasetLoader:
     def __init__(self, name, directory):
         self.name = name
-        self.samples_path = Path(directory) / f"{name}.json"
-        self.corpus_path = Path(directory) / f"{name}_corpus.json"
+        self.directory = resolve_dataset_dir(directory)
+        self.samples_path = self.directory / f"{name}.json"
+        self.corpus_path = self.directory / f"{name}_corpus.json"
 
     def validate_source_pair(self):
         for path in (self.samples_path, self.corpus_path):
