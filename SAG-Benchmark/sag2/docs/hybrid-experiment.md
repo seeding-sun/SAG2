@@ -119,6 +119,19 @@ D:\learn\.venv\Scripts\python.exe scripts\run_hybrid_compare.py `
   --seed-k 10
 ```
 
+Dense-only arm:
+
+```powershell
+D:\learn\.venv\Scripts\python.exe scripts\run_hybrid_compare.py `
+  --retrieval-mode dense `
+  --dataset-dir ..\..\dataset `
+  --sample-file ..\..\dataset\musique_100_for_ab.json `
+  --output-dir output\hybrid-ab\C1-H1 `
+  --max-hops 1 `
+  --candidate-k 100 `
+  --seed-k 10
+```
+
 Use `--max-hops 0` for the initial-scoring-only comparison.
 
 Each output directory contains:

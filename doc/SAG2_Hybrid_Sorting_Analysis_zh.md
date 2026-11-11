@@ -105,7 +105,40 @@ BM25 R@10 = 0.250, Hybrid R@10 = 0.750
 2. Hybrid 初始 top-5 没有提高，说明新增收益主要集中在第 6 至第 10 名。
 3. Qwen 重排后，Hybrid 的前 5 条质量下降；一轮扩展后，前 10 条也下降。
 4. 当前主要问题不是 RRF 公式失效，而是 Qwen 评分和 seed 选择没有利用混合候选的增量证据。
-5. 下一步应增加 BGE-only+Qwen 对照，并检查错误 seed 与错误桥接词。
+5. 补充的 BGE-only+Qwen 对照明显优于 BM25 和等权 Hybrid。
+
+## 6.1 C 组：BGE-only+Qwen
+
+固定 10 题、其余参数完全相同，只把初始召回改为 BGE dense top-100：
+
+| 配置 | R@5 | R@10 | AE@10 | Judgments | 平均每题耗时 |
+|---|---:|---:|---:|---:|---:|
+| A：BM25 H=0 | 60.00% | 60.00% | 20.00% | 1,000 | 111.6 秒 |
+| B：Hybrid H=0 | 49.17% | 61.67% | 20.00% | 1,000 | 113.0 秒 |
+| C：BGE-only H=0 | 61.67% | 70.00% | 40.00% | 1,000 | 114.0 秒 |
+| A：BM25 H=1 | 52.50% | 57.50% | 20.00% | 2,100 | 246.0 秒 |
+| B：Hybrid H=1 | 49.17% | 49.17% | 10.00% | 2,092 | 241.2 秒 |
+| C：BGE-only H=1 | 60.83% | 65.83% | 40.00% | 2,100 | 243.5 秒 |
+
+H=1 相对 BM25：
+
+```text
+C 的 R@10 增加 8.33 个百分点
+C 的 AE@10 增加 20 个百分点
+逐题 R@10：C 赢 5 题、平 3 题、输 2 题
+```
+
+H=1 相对 Hybrid：
+
+```text
+C 的 R@10 增加 16.67 个百分点
+C 的 AE@10 增加 30 个百分点
+逐题 R@10：C 赢 5 题、平 4 题、输 1 题
+```
+
+这说明当前等权 RRF 会把 BGE 原本较强的候选顺序打散，引入 BM25 的噪声。C 组没有 RRF，Qwen 能更有效地保留 BGE 的语义召回优势。
+
+10 题仍不足以形成最终论文结论，但 C 组是当前最值得扩大到 100 题确认的候选方案。
 
 ## 7. 数据位置
 
@@ -116,6 +149,11 @@ output/hybrid-smoke/A1-H1/details.jsonl
 output/hybrid-smoke/B1-H1/details.jsonl
 output/hybrid-smoke/comparison-H0.json
 output/hybrid-smoke/comparison-H1.json
+output/hybrid-smoke/C1-H0/details.jsonl
+output/hybrid-smoke/C1-H1/details.jsonl
+output/hybrid-smoke/comparison-CvsA-H0.json
+output/hybrid-smoke/comparison-CvsA-H1.json
+output/hybrid-smoke/comparison-CvsB-H1.json
 ```
 
 每题 `details.jsonl` 中重点字段：

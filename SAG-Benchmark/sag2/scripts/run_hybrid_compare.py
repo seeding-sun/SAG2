@@ -54,7 +54,11 @@ def load_subset(path: Path, records: list[dict]) -> list[dict]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--retrieval-mode", choices=["bm25", "hybrid"], required=True)
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=["bm25", "dense", "hybrid"],
+        required=True,
+    )
     parser.add_argument("--dataset", default="musique")
     parser.add_argument(
         "--dataset-dir",
@@ -162,7 +166,7 @@ async def run(args: argparse.Namespace) -> None:
     )
     cache_path = args.cache_dir / f"{args.dataset}.sqlite"
     vector_cache = None
-    if args.retrieval_mode == "hybrid":
+    if args.retrieval_mode in {"dense", "hybrid"}:
         vector_cache = VectorCache.load(args.cache_dir, args.dataset)
     config = {
         "dataset": args.dataset,
@@ -244,7 +248,7 @@ async def run(args: argparse.Namespace) -> None:
             timeout=aiohttp.ClientTimeout(total=args.timeout),
         ) as session:
             vector_retriever = None
-            if args.retrieval_mode == "hybrid":
+            if args.retrieval_mode in {"dense", "hybrid"}:
                 embedding_base_url = args.embedding_base_url or os.getenv(
                     "SAG_EMBEDDING_BASE_URL"
                 )
@@ -276,7 +280,9 @@ async def run(args: argparse.Namespace) -> None:
             async def worker() -> None:
                 for record in pending:
                     retriever = None
-                    if vector_retriever is not None:
+                    if args.retrieval_mode == "dense":
+                        retriever = vector_retriever
+                    elif args.retrieval_mode == "hybrid":
                         retriever = HybridRetriever(
                             vector_retriever,
                             pool_k=args.pool_k,

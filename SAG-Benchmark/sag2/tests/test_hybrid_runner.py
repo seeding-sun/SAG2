@@ -127,7 +127,7 @@ def test_runner_executes_both_arms_and_paired_analysis(tmp_path):
         port = sockets[0].getsockname()[1]
         base_url = f"http://127.0.0.1:{port}/v1"
         try:
-            for mode, name in (("bm25", "A"), ("hybrid", "B")):
+            for mode, name in (("bm25", "A"), ("dense", "C"), ("hybrid", "B")):
                 args = runner.build_parser().parse_args(
                     [
                         "--retrieval-mode",
@@ -169,7 +169,11 @@ def test_runner_executes_both_arms_and_paired_analysis(tmp_path):
     asyncio.run(exercise())
     a_rows = load_details(tmp_path / "A")
     b_rows = load_details(tmp_path / "B")
+    c_rows = load_details(tmp_path / "C")
     result = summarize(a_rows, b_rows, samples=20, seed=1)
+    dense_result = summarize(a_rows, c_rows, samples=20, seed=1)
     assert result["question_count"] == 1
+    assert dense_result["question_count"] == 1
     assert result["cost"]["a_judgments"] == 2
     assert result["cost"]["b_judgments"] == 3
+    assert dense_result["cost"]["b_judgments"] == 3
