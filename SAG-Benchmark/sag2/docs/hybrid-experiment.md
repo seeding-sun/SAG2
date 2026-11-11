@@ -79,7 +79,19 @@ The cache consists of:
 
 The manifest binds the vectors to the corpus SHA256, index signature, chunk policy, model and dimension.
 
-## 4. Run the A/B arms
+## 4. Evaluate initial retrieval without Qwen
+
+```powershell
+D:\learn\.venv\Scripts\python.exe scripts\run_initial_retrieval_eval.py `
+  --dataset-dir ..\..\dataset `
+  --sample-file ..\..\dataset\musique_100_for_ab.json `
+  --cache-dir .cache\sag2 `
+  --output-dir output\initial-retrieval
+```
+
+This compares BM25, dense retrieval and RRF fusion without making evidence-scorer requests. It reports top-k recall, complete-evidence coverage, full-entry recall and hybrid-added noise.
+
+## 5. Run the A/B arms
 
 BM25 arm:
 
@@ -131,7 +143,7 @@ D:\learn\.venv\Scripts\python.exe scripts\run_hybrid_compare.py `
   --resume
 ```
 
-## 5. Analyze paired results
+## 6. Analyze paired results
 
 ```powershell
 D:\learn\.venv\Scripts\python.exe scripts\analyze_hybrid_results.py `
