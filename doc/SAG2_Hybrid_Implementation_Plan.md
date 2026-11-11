@@ -156,7 +156,7 @@ Qwen 证据判断：
 
 ```text
 base_url: http://192.168.2.69:9099/v1
-model: qwen3.5-397b-a17b
+model: qwen3.5-122b-a10b
 endpoint: /chat/completions
 ```
 
@@ -308,7 +308,7 @@ SAG_EMBEDDING_BATCH_SIZE=32
 SAG_EMBEDDING_DIMENSION=1024
 
 SAG_EVIDENCE_BASE_URL=http://192.168.2.69:9099/v1
-SAG_EVIDENCE_MODEL=qwen3.5-397b-a17b
+SAG_EVIDENCE_MODEL=qwen3.5-122b-a10b
 SAG_EVIDENCE_API_KEY=
 SAG_EVIDENCE_BATCH_SIZE=10
 

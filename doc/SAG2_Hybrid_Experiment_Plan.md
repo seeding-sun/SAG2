@@ -113,7 +113,7 @@ rerank endpoint: /v1/rerank
 
 ```text
 base_url: http://192.168.2.69:9099/v1
-model: qwen3.5-397b-a17b
+model: qwen3.5-122b-a10b
 ```
 
 预期接口：
@@ -177,7 +177,7 @@ RERANK_BASE_URL=http://192.168.2.108:8014/v1
 RERANK_MODEL=bge-reranker-v2-m3
 
 EVIDENCE_BASE_URL=http://192.168.2.69:9099/v1
-EVIDENCE_MODEL=qwen3.5-397b-a17b
+EVIDENCE_MODEL=qwen3.5-122b-a10b
 EVIDENCE_API_KEY=
 ```
 
