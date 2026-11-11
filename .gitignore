@@ -1,0 +1,17 @@
+.env
+**/.env
+**/.cache/
+**/output/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+*.pyc
+*.pyo
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.part
+*.zip
+Thumbs.db
+.DS_Store
