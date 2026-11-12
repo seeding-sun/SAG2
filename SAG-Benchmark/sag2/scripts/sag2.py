@@ -1092,6 +1092,10 @@ async def search_sag2(
                     {
                         "id": c["id"],
                         "score": c["jev_score"],
+                        # Grade mode keeps the raw rubric anchor so a run can be audited
+                        # by level instead of re-deriving it from the normalised score.
+                        # Binary runs never set jev_grade, so their trace is unchanged.
+                        **({"grade": c["jev_grade"]} if "jev_grade" in c else {}),
                     }
                     for c in ranked()
                 ],

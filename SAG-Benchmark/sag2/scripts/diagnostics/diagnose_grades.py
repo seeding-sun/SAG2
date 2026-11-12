@@ -76,7 +76,10 @@ def final_scores(row: dict) -> dict[int, float]:
     return {entry["id"]: entry["score"] for entry in steps[-1]["scores"]} if steps else {}
 
 
-def grade_of(score: float) -> int:
+def grade_of(score: float, entry: dict | None = None) -> int:
+    """Read the rubric anchor from the trace, falling back to the normalised score."""
+    if entry is not None and "grade" in entry:
+        return int(entry["grade"])
     return int(round(score * 10))
 
 
@@ -126,8 +129,8 @@ def report_grades(rows: list[dict], threshold: float, label: str) -> dict:
             continue
         hop_zero = steps[0]
         scores = {entry["id"]: entry["score"] for entry in hop_zero["scores"]}
-        for score in scores.values():
-            histogram[grade_of(score)] += 1
+        for entry in hop_zero["scores"]:
+            histogram[grade_of(entry["score"], entry)] += 1
         pool_sizes.append(len(scores))
         eligible = sum(1 for score in scores.values() if score >= threshold)
         eligible_per_question.append(eligible)
