@@ -91,6 +91,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evidence-api-key-env", default="SAG_EVIDENCE_API_KEY")
     parser.add_argument("--evidence-batch-size", type=int, default=10)
     parser.add_argument("--evidence-concurrency", type=int, default=4)
+    parser.add_argument(
+        "--scoring-scale",
+        choices=("binary", "grade"),
+        default="binary",
+        help="binary asks for 0..1 scores; grade asks for the discrete rubric anchors",
+    )
+    parser.add_argument(
+        "--grade-threshold",
+        type=float,
+        default=0.0,
+        help=(
+            "Discard candidates scoring below this value instead of padding the seed set; "
+            "in grade mode 0.4 is the rubric's 'on the answer chain' boundary (grade 4)"
+        ),
+    )
     parser.add_argument("--no-response-format", action="store_true")
     parser.add_argument("--pool-k", type=int, default=100)
     parser.add_argument("--rrf-k", type=int, default=60)
@@ -195,6 +210,8 @@ async def run(args: argparse.Namespace) -> None:
         "evidence_batch_size": args.evidence_batch_size,
         "evidence_concurrency": args.evidence_concurrency,
         "response_format": not args.no_response_format,
+        "scoring_scale": args.scoring_scale,
+        "grade_threshold": args.grade_threshold,
         "pool_k": args.pool_k if args.retrieval_mode == "hybrid" else None,
         "rrf_k": args.rrf_k if args.retrieval_mode == "hybrid" else None,
         "bm25_weight": args.bm25_weight if args.retrieval_mode == "hybrid" else None,
@@ -299,6 +316,7 @@ async def run(args: argparse.Namespace) -> None:
                         batch_size=args.evidence_batch_size,
                         concurrency=args.evidence_concurrency,
                         response_format=not args.no_response_format,
+                        scoring_scale=args.scoring_scale,
                     )
                     result = await search_sag2(
                         index,
@@ -308,6 +326,7 @@ async def run(args: argparse.Namespace) -> None:
                         seed_k=args.seed_k,
                         max_hops=args.max_hops,
                         expansion_term_limit=args.expansion_term_limit,
+                        grade_threshold=args.grade_threshold,
                         initial_retriever=retriever,
                     )
                     initial = result.pop("baseline")

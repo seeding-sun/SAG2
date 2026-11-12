@@ -13,7 +13,7 @@ import aiohttp
 import tiktoken
 
 from model_api import RequestJournal, token_usage
-from sag2 import CRITERION, EVIDENCE_SCORE_NOTE, compact_json
+from sag2 import CRITERION, EVIDENCE_SCORE_NOTE, GRADE_CRITERION, GRADE_RUBRIC, compact_json
 
 
 class QwenProtocolError(ValueError):
@@ -58,11 +58,13 @@ def repair_deleted_digit_key(
     return repaired, [(emitted, wanted)]
 
 
-def parse_scores(
+def _unwrap_keyed_object(
     content: str,
     expected_keys: set[str],
+    field: str,
     repairs: list[tuple[str, str]] | None = None,
-) -> dict[str, float]:
+) -> dict:
+    """Decode the model's JSON envelope and align its keys with the candidate ids."""
     if not isinstance(content, str) or not content.strip():
         raise QwenProtocolError("Qwen returned empty content")
     text = content.strip()
@@ -73,9 +75,9 @@ def parse_scores(
         payload = json.loads(text)
     except json.JSONDecodeError as error:
         raise QwenProtocolError(f"Qwen returned invalid JSON: {error}") from error
-    scores = payload.get("scores") if isinstance(payload, dict) else None
+    scores = payload.get(field) if isinstance(payload, dict) else None
     if not isinstance(scores, dict):
-        raise QwenProtocolError("Qwen response must contain a scores object")
+        raise QwenProtocolError(f"Qwen response must contain a {field} object")
     if set(scores) != expected_keys:
         scores, applied = repair_deleted_digit_key(scores, expected_keys)
         if set(scores) != expected_keys:
@@ -86,11 +88,38 @@ def parse_scores(
             )
         if repairs is not None:
             repairs.extend(applied)
+    return scores
+
+
+def parse_scores(
+    content: str,
+    expected_keys: set[str],
+    repairs: list[tuple[str, str]] | None = None,
+) -> dict[str, float]:
+    scores = _unwrap_keyed_object(content, expected_keys, "scores", repairs)
     normalized = {}
     for key, value in scores.items():
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
             raise QwenProtocolError(f"Invalid evidence score for {key}: {value!r}")
         normalized[key] = float(value)
+    return normalized
+
+
+def parse_grades(
+    content: str,
+    expected_keys: set[str],
+    repairs: list[tuple[str, str]] | None = None,
+) -> dict[str, int]:
+    """Decode grade-mode output, which must use one of the rubric's discrete anchors."""
+    allowed = set(GRADE_RUBRIC)
+    grades = _unwrap_keyed_object(content, expected_keys, "grades", repairs)
+    normalized = {}
+    for key, value in grades.items():
+        if type(value) is not int or value not in allowed:
+            raise QwenProtocolError(
+                f"Invalid evidence grade for {key}: {value!r}; expected one of {sorted(allowed)}"
+            )
+        normalized[key] = value
     return normalized
 
 
@@ -106,11 +135,14 @@ class QwenEvidenceScorer:
         batch_size: int = 10,
         concurrency: int = 4,
         response_format: bool = True,
+        scoring_scale: str = "binary",
         max_candidate_tokens: int = 32_000,
         max_request_tokens: int = 64_000,
     ):
         if batch_size < 1 or concurrency < 1:
             raise ValueError("Qwen batch size and concurrency must be positive")
+        if scoring_scale not in ("binary", "grade"):
+            raise ValueError("Qwen scoring scale must be 'binary' or 'grade'")
         self.session = session
         self.endpoint = chat_completions_endpoint(base_url)
         self.model = model
@@ -118,6 +150,7 @@ class QwenEvidenceScorer:
         self.batch_size = batch_size
         self.concurrency = concurrency
         self.response_format = response_format
+        self.scoring_scale = scoring_scale
         self.max_candidate_tokens = max_candidate_tokens
         self.max_request_tokens = max_request_tokens
         self.encoding = tiktoken.get_encoding("o200k_base")
@@ -226,11 +259,21 @@ class QwenEvidenceScorer:
         attempt: int,
     ) -> tuple[dict[str, float], dict, int]:
         expected = set(candidates)
-        system = (
-            "You are a strict evidence judge. Return only one JSON object with a "
-            "'scores' object. Each candidate id must appear exactly once and map to a "
-            "number from 0 to 1. Do not add explanations or keys."
-        )
+        graded = self.scoring_scale == "grade"
+        if graded:
+            system = (
+                "You are a strict evidence judge. Return only one JSON object with a "
+                "'grades' object. Each candidate id must appear exactly once and map to an "
+                f"integer grade from {sorted(GRADE_RUBRIC)}. Do not add explanations or keys."
+            )
+            criterion = GRADE_CRITERION
+        else:
+            system = (
+                "You are a strict evidence judge. Return only one JSON object with a "
+                "'scores' object. Each candidate id must appear exactly once and map to a "
+                "number from 0 to 1. Do not add explanations or keys."
+            )
+            criterion = CRITERION
         if attempt > 1:
             system += " The previous response was invalid; correct the JSON format."
         payload = {
@@ -241,7 +284,7 @@ class QwenEvidenceScorer:
                     "role": "user",
                     "content": compact_json(
                         {
-                            "criterion": CRITERION,
+                            "criterion": criterion,
                             "shared_context": state,
                             "candidates": candidates,
                         }
@@ -262,7 +305,11 @@ class QwenEvidenceScorer:
         except (KeyError, IndexError, TypeError) as error:
             raise QwenProtocolError("Qwen response has no chat completion content") from error
         repairs: list[tuple[str, str]] = []
-        scores = parse_scores(content, expected, repairs)
+        scores = (
+            parse_grades(content, expected, repairs)
+            if graded
+            else parse_scores(content, expected, repairs)
+        )
         usage = token_usage(response)
         return scores, {
             "candidate_count": len(candidates),
@@ -313,10 +360,20 @@ class QwenEvidenceScorer:
             for key, value in batch_scores.items()
         }
         details = [detail for _, detail in results]
+        graded = self.scoring_scale == "grade"
         return [
             {
                 **candidate,
-                "jev_score": scores[f"candidate_{candidate['id']}"],
+                "jev_score": (
+                    scores[f"candidate_{candidate['id']}"] / 10
+                    if graded
+                    else scores[f"candidate_{candidate['id']}"]
+                ),
+                **(
+                    {"jev_grade": scores[f"candidate_{candidate['id']}"]}
+                    if graded
+                    else {}
+                ),
                 "jev_model": next(
                     detail["model"]
                     for batch, (_, detail) in zip(batches, results, strict=True)
@@ -327,6 +384,7 @@ class QwenEvidenceScorer:
         ], {
             "requests": len(details),
             "judgments": len(candidates),
+            "scoring_scale": self.scoring_scale,
             "batches": details,
             "input_tokens": sum(detail["input_tokens"] for detail in details),
             "output_tokens": sum(detail["output_tokens"] for detail in details),
