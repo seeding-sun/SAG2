@@ -167,6 +167,23 @@ D:\learn\.venv\Scripts\python.exe scripts\analyze_hybrid_results.py `
 
 The analyzer writes paired metric deltas, 95% bootstrap intervals, hop-stratified changes, win/tie/loss counts, initial-candidate noise and cost totals.
 
+## Server suite
+
+For a full A/B/C run, use the suite wrapper:
+
+```powershell
+D:\learn\.venv\Scripts\python.exe scripts\run_hybrid_suite.py `
+  --dataset-dir ..\..\dataset `
+  --sample-file ..\..\dataset\musique_100_for_ab.json `
+  --output-root output\abc-100\H0 `
+  --arms bm25 dense hybrid `
+  --max-hops 0 `
+  --concurrency 4 `
+  --evidence-concurrency 1
+```
+
+The wrapper checks the BM25 index and embedding cache, prepares them when missing, then runs the selected arms sequentially with checkpoint resume support.
+
 ## Notes
 
 - `jev_score` keeps its historical field name so the existing SAG2 loop can be reused unchanged. A score produced by this adapter is a Qwen judgment, not an output from the paper's hosted JEV model.
