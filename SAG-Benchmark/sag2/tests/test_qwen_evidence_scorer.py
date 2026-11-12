@@ -32,6 +32,33 @@ def test_parse_scores_rejects_invalid_protocol(content):
         parse_scores(content, {"candidate_1", "candidate_2"})
 
 
+def test_parse_scores_repairs_one_deleted_digit_in_candidate_key():
+    repairs: list[tuple[str, str]] = []
+    scores = parse_scores(
+        '{"scores":{"candidate_2018":0.4,"candidate_1017":0.9}}',
+        {"candidate_2018", "candidate_10197"},
+        repairs,
+    )
+    assert scores == {"candidate_2018": 0.4, "candidate_10197": 0.9}
+    assert repairs == [("candidate_1017", "candidate_10197")]
+
+
+@pytest.mark.parametrize(
+    "scores_json,expected",
+    [
+        # no key at all: one expected key missing, nothing unexpected to map
+        ('{}', {"candidate_10197"}),
+        # unexpected key is not a one-character deletion of the missing key
+        ('{"candidate_9999":0.9}', {"candidate_10197"}),
+        # two expected keys missing: ambiguous
+        ('{"candidate_1017":0.9}', {"candidate_10197", "candidate_5555"}),
+    ],
+)
+def test_parse_scores_does_not_repair_ambiguous_keys(scores_json, expected):
+    with pytest.raises(QwenProtocolError):
+        parse_scores('{"scores":%s}' % scores_json, expected)
+
+
 def test_state_never_adds_gold_fields(tmp_path):
     scorer = QwenEvidenceScorer(
         None,

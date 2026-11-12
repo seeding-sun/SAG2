@@ -25,7 +25,44 @@ def chat_completions_endpoint(base_url: str) -> str:
     return endpoint if endpoint.endswith("/chat/completions") else endpoint + "/chat/completions"
 
 
-def parse_scores(content: str, expected_keys: set[str]) -> dict[str, float]:
+def _is_one_char_deletion(shorter: str, longer: str) -> bool:
+    """Return True when `shorter` equals `longer` with exactly one character removed."""
+    if len(longer) != len(shorter) + 1:
+        return False
+    return any(longer[:i] + longer[i + 1 :] == shorter for i in range(len(longer)))
+
+
+def repair_deleted_digit_key(
+    scores: dict, expected_keys: set[str]
+) -> tuple[dict, list[tuple[str, str]]]:
+    """Repair one unambiguous candidate-key typo.
+
+    Qwen occasionally drops a single digit from a long candidate id, e.g. emitting
+    ``candidate_1017`` for ``candidate_10197``. The mapping is only accepted when it is
+    the sole possible reading: exactly one expected key is missing, exactly one
+    unexpected key is present, and the unexpected key equals the missing key with
+    exactly one character deleted. Anything else is left untouched so the caller
+    still raises.
+    """
+    missing = sorted(expected_keys - set(scores))
+    extra = sorted(set(scores) - expected_keys)
+    if len(missing) != 1 or len(extra) != 1:
+        return scores, []
+    wanted, emitted = missing[0], extra[0]
+    prefix = "candidate_"
+    if not (wanted.startswith(prefix) and emitted.startswith(prefix)):
+        return scores, []
+    if not _is_one_char_deletion(emitted[len(prefix) :], wanted[len(prefix) :]):
+        return scores, []
+    repaired = {(wanted if key == emitted else key): value for key, value in scores.items()}
+    return repaired, [(emitted, wanted)]
+
+
+def parse_scores(
+    content: str,
+    expected_keys: set[str],
+    repairs: list[tuple[str, str]] | None = None,
+) -> dict[str, float]:
     if not isinstance(content, str) or not content.strip():
         raise QwenProtocolError("Qwen returned empty content")
     text = content.strip()
@@ -40,11 +77,15 @@ def parse_scores(content: str, expected_keys: set[str]) -> dict[str, float]:
     if not isinstance(scores, dict):
         raise QwenProtocolError("Qwen response must contain a scores object")
     if set(scores) != expected_keys:
-        missing = sorted(expected_keys - set(scores))
-        extra = sorted(set(scores) - expected_keys)
-        raise QwenProtocolError(
-            f"Qwen score keys do not match candidates; missing={missing[:5]}, extra={extra[:5]}"
-        )
+        scores, applied = repair_deleted_digit_key(scores, expected_keys)
+        if set(scores) != expected_keys:
+            missing = sorted(expected_keys - set(scores))
+            extra = sorted(set(scores) - expected_keys)
+            raise QwenProtocolError(
+                f"Qwen score keys do not match candidates; missing={missing[:5]}, extra={extra[:5]}"
+            )
+        if repairs is not None:
+            repairs.extend(applied)
     normalized = {}
     for key, value in scores.items():
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
@@ -220,7 +261,8 @@ class QwenEvidenceScorer:
             content = response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
             raise QwenProtocolError("Qwen response has no chat completion content") from error
-        scores = parse_scores(content, expected)
+        repairs: list[tuple[str, str]] = []
+        scores = parse_scores(content, expected, repairs)
         usage = token_usage(response)
         return scores, {
             "candidate_count": len(candidates),
@@ -229,6 +271,7 @@ class QwenEvidenceScorer:
             "output_tokens": usage["output_tokens"],
             "model": response.get("model") or self.model,
             "latency_ms": elapsed_ms,
+            "repaired_keys": [f"{emitted}->{wanted}" for emitted, wanted in repairs],
         }, attempt
 
     async def _score_batch(
