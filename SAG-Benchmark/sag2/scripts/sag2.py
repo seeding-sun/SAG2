@@ -1059,6 +1059,7 @@ async def search_sag2(
             if hop
             else []
         )
+        previous_eligible_count = 0
         if hop == 2:
             carried_candidates = [c for c in pool if c["id"] in latest]
             incoming = [c for c in pool if c["id"] not in latest][:20]
@@ -1066,6 +1067,7 @@ async def search_sag2(
                 (c for c in latest.values() if c["jev_score"] >= grade_threshold),
                 key=lambda c: (-c["jev_score"], -c["fusion_score"], c["id"]),
             )
+            previous_eligible_count = len(previous)
             history = list({c["id"]: c for c in [*carried_candidates, *previous]}.values())
             pool = history[: len(pool) - len(incoming)] + incoming
             evidence = [{**c, "previous_jev_score": c["jev_score"]} for c in ranked()[:10]]
@@ -1084,6 +1086,7 @@ async def search_sag2(
                 "count": len(scored),
                 "carried_seed_count": len(carried),
                 "protected_bm25_count": len(protected),
+                "previous_eligible_count": previous_eligible_count,
                 "evidence_ids": [c["id"] for c in evidence],
                 "scores": [
                     {

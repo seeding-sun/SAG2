@@ -36,12 +36,49 @@ class RankScorer:
         }
 
 
+class RuleScorer:
+    """Scores by document id so every hop has qualifying seeds and non-qualifying filler."""
+
+    def __init__(self, qualifies):
+        self.qualifies = qualifies
+
+    async def score(self, query, candidates, evidence, *, context=None):
+        return [
+            {
+                **candidate,
+                "jev_score": 1.0 if self.qualifies(candidate["id"]) else 0.0,
+                "jev_model": "rule",
+            }
+            for candidate in candidates
+        ], {
+            "requests": 1,
+            "judgments": len(candidates),
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "batches": [],
+        }
+
+
 def make_index(tmp_path):
     corpus = [
         {"title": f"Doc{number}", "text": f"anchor passage number {number}"}
         for number in range(1, 13)
     ]
     return sag2.CorpusIndex(tmp_path / "grades.sqlite", corpus, "grade-fixture")
+
+
+def make_deep_index(tmp_path):
+    """Enough unseen passages that both expansion rounds retrieve new candidates.
+
+    `search_sag2` breaks out of the hop loop when an expansion round returns nothing,
+    so a 12-document corpus can never reach hop 2. Forty documents leave room for
+    hop-1 and hop-2 to each pull ten fresh passages.
+    """
+    corpus = [
+        {"title": f"Doc{number}", "text": f"anchor passage number {number}"}
+        for number in range(1, 41)
+    ]
+    return sag2.CorpusIndex(tmp_path / "deep.sqlite", corpus, "deep-fixture")
 
 
 def seed_ids(result):
@@ -135,14 +172,15 @@ def test_eligible_count_matches_the_scored_pool_when_everything_passes(tmp_path)
 
 def test_hop_two_previous_candidates_respect_the_threshold(tmp_path):
     """hop-2 used to backfill 80 slots from ranks that were all 0.0."""
-    index = make_index(tmp_path)
-    dataset = index.retrieve(index.match_query("anchor"), set(), 10)
-    doc_ids = [row["id"] for row in dataset]
-    scorer = RankScorer({doc_ids[0]: 1.0})
+    index = make_deep_index(tmp_path)
+
+    def qualifies(document_id: int) -> bool:
+        return document_id % 3 == 0
+
     result = asyncio.run(
         sag2.search_sag2(
             index,
-            scorer,
+            RuleScorer(qualifies),
             "anchor",
             candidate_k=10,
             seed_k=2,
@@ -150,7 +188,34 @@ def test_hop_two_previous_candidates_respect_the_threshold(tmp_path):
             grade_threshold=0.4,
         )
     )
-    hop_two = [step for step in result["trace"] if step["stage"] == "jev"][-1]
-    # Only the single candidate above the threshold may be carried into hop 2.
-    assert hop_two["carried_seed_count"] == 1
-    assert hop_two["eligible_count"] == 1
+    steps = [step for step in result["trace"] if step["stage"] == "jev"]
+    hop_two = steps[-1]
+    assert hop_two["hop"] == 2, "hop 2 must actually run for this assertion to mean anything"
+
+    # `latest` holds every judgement so far; only the qualifying ones may resurface.
+    seen = {entry["id"] for step in steps[:2] for entry in step["scores"]}
+    expected = sum(1 for document_id in seen if qualifies(document_id))
+    assert hop_two["previous_eligible_count"] == expected
+    assert hop_two["previous_eligible_count"] < len(seen), "the filter must actually drop rows"
+
+
+def test_hop_two_history_is_unfiltered_at_the_default_threshold(tmp_path):
+    """At grade_threshold 0.0 every scored candidate still backfills hop-2 history."""
+    index = make_deep_index(tmp_path)
+    result = asyncio.run(
+        sag2.search_sag2(
+            index,
+            RuleScorer(lambda document_id: document_id % 3 == 0),
+            "anchor",
+            candidate_k=10,
+            seed_k=2,
+            max_hops=2,
+        )
+    )
+    steps = [step for step in result["trace"] if step["stage"] == "jev"]
+    hop_two = steps[-1]
+    assert hop_two["hop"] == 2
+    seen = {entry["id"] for step in steps[:2] for entry in step["scores"]}
+    # Nothing is filtered, so the whole accumulated history is eligible.
+    assert hop_two["previous_eligible_count"] == len(seen)
+    assert hop_two["previous_eligible_count"] > 1
