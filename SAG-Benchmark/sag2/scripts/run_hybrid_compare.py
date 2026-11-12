@@ -92,6 +92,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evidence-batch-size", type=int, default=10)
     parser.add_argument("--evidence-concurrency", type=int, default=4)
     parser.add_argument(
+        "--max-output-tokens-per-candidate",
+        type=int,
+        default=0,
+        help=(
+            "Cap Qwen output at 256 + this value x candidates. 0 disables the cap, which "
+            "matches every pre-existing run: a degenerate generation can then run to the "
+            "server's max-model-len and hold a slot for hours"
+        ),
+    )
+    parser.add_argument(
         "--scoring-scale",
         choices=("binary", "grade"),
         default="binary",
@@ -212,6 +222,7 @@ async def run(args: argparse.Namespace) -> None:
         "response_format": not args.no_response_format,
         "scoring_scale": args.scoring_scale,
         "grade_threshold": args.grade_threshold,
+        "max_output_tokens_per_candidate": args.max_output_tokens_per_candidate,
         "pool_k": args.pool_k if args.retrieval_mode == "hybrid" else None,
         "rrf_k": args.rrf_k if args.retrieval_mode == "hybrid" else None,
         "bm25_weight": args.bm25_weight if args.retrieval_mode == "hybrid" else None,
@@ -317,6 +328,9 @@ async def run(args: argparse.Namespace) -> None:
                         concurrency=args.evidence_concurrency,
                         response_format=not args.no_response_format,
                         scoring_scale=args.scoring_scale,
+                        max_output_tokens_per_candidate=(
+                            args.max_output_tokens_per_candidate
+                        ),
                     )
                     result = await search_sag2(
                         index,

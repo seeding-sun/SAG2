@@ -136,6 +136,7 @@ class QwenEvidenceScorer:
         concurrency: int = 4,
         response_format: bool = True,
         scoring_scale: str = "binary",
+        max_output_tokens_per_candidate: int = 0,
         max_candidate_tokens: int = 32_000,
         max_request_tokens: int = 64_000,
     ):
@@ -143,6 +144,8 @@ class QwenEvidenceScorer:
             raise ValueError("Qwen batch size and concurrency must be positive")
         if scoring_scale not in ("binary", "grade"):
             raise ValueError("Qwen scoring scale must be 'binary' or 'grade'")
+        if max_output_tokens_per_candidate < 0:
+            raise ValueError("Qwen output token budget must not be negative")
         self.session = session
         self.endpoint = chat_completions_endpoint(base_url)
         self.model = model
@@ -151,6 +154,7 @@ class QwenEvidenceScorer:
         self.concurrency = concurrency
         self.response_format = response_format
         self.scoring_scale = scoring_scale
+        self.max_output_tokens_per_candidate = max_output_tokens_per_candidate
         self.max_candidate_tokens = max_candidate_tokens
         self.max_request_tokens = max_request_tokens
         self.encoding = tiktoken.get_encoding("o200k_base")
@@ -293,6 +297,14 @@ class QwenEvidenceScorer:
             ],
             "temperature": 0,
         }
+        # Without an output cap a single degenerate generation can run to the server's
+        # max-model-len (262144 here), which blocks a slot for hours and looks like a
+        # wedged server. Each candidate needs one id plus one small integer, so a
+        # generous per-candidate budget still leaves ample headroom.
+        output_budget = None
+        if self.max_output_tokens_per_candidate:
+            output_budget = 256 + self.max_output_tokens_per_candidate * len(candidates)
+            payload["max_tokens"] = output_budget
         if self.response_format:
             payload["response_format"] = {"type": "json_object"}
         started = time.perf_counter()
@@ -319,6 +331,7 @@ class QwenEvidenceScorer:
             "model": response.get("model") or self.model,
             "latency_ms": elapsed_ms,
             "repaired_keys": [f"{emitted}->{wanted}" for emitted, wanted in repairs],
+            "max_tokens": output_budget,
         }, attempt
 
     async def _score_batch(

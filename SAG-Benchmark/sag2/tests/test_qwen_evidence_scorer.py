@@ -237,6 +237,75 @@ def test_grade_mode_normalizes_to_unit_interval_and_keeps_the_raw_grade(tmp_path
     assert "necessary evidence" not in journal.payloads[0]["criterion"]
 
 
+class CapturingJournal:
+    """Records the payload so the output cap can be inspected without a network call."""
+
+    def __init__(self):
+        self.payloads: list[dict] = []
+
+    async def post(self, service, endpoint, api_key, payload):
+        self.payloads.append(payload)
+        request = json.loads(payload["messages"][1]["content"])
+        scores = {key: 0.5 for key in request["candidates"]}
+        return {
+            "model": "qwen-fake",
+            "choices": [{"message": {"content": json.dumps({"scores": scores})}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+        }
+
+
+def test_output_cap_is_absent_by_default(tmp_path):
+    """Default 0 keeps the historical payload byte-identical, so old runs stay replayable."""
+    scorer = QwenEvidenceScorer(
+        None,
+        "http://offline/v1",
+        "qwen-test",
+        "unused",
+        journal_dir=tmp_path,
+        batch_size=10,
+        response_format=False,
+    )
+    journal = CapturingJournal()
+    scorer.journal = journal
+    candidates = [{"id": n, "title": f"T{n}", "content": "c"} for n in range(1, 4)]
+    asyncio.run(scorer.score("question", candidates, []))
+    assert "max_tokens" not in journal.payloads[0]
+
+
+def test_output_cap_scales_with_the_batch(tmp_path):
+    """An uncapped degenerate generation can run to max-model-len and hold a slot for hours."""
+    scorer = QwenEvidenceScorer(
+        None,
+        "http://offline/v1",
+        "qwen-test",
+        "unused",
+        journal_dir=tmp_path,
+        batch_size=10,
+        response_format=False,
+        max_output_tokens_per_candidate=32,
+    )
+    journal = CapturingJournal()
+    scorer.journal = journal
+    candidates = [{"id": n, "title": f"T{n}", "content": "c"} for n in range(1, 4)]
+    scored, usage = asyncio.run(scorer.score("question", candidates, []))
+    # 256 floor + 32 per candidate
+    assert journal.payloads[0]["max_tokens"] == 256 + 32 * 3
+    assert usage["batches"][0]["max_tokens"] == 256 + 32 * 3
+    assert all(row["jev_score"] == 0.5 for row in scored)
+
+
+def test_output_cap_rejects_a_negative_budget(tmp_path):
+    with pytest.raises(ValueError):
+        QwenEvidenceScorer(
+            None,
+            "http://offline/v1",
+            "qwen-test",
+            "unused",
+            journal_dir=tmp_path,
+            max_output_tokens_per_candidate=-1,
+        )
+
+
 def test_grade_mode_rejects_an_unknown_scoring_scale(tmp_path):
     with pytest.raises(ValueError):
         QwenEvidenceScorer(
