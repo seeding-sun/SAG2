@@ -20,6 +20,15 @@ class QwenProtocolError(ValueError):
     pass
 
 
+class QwenModelMismatch(QwenProtocolError):
+    """The gateway answered with a different model than the run is configured for.
+
+    Raised in strict mode so a silent model substitution can never be reported as a
+    valid run.  ``qwen3.5-122b-a10b`` being remapped to ``qwen3.8-27b`` is exactly
+    this failure: HTTP 200, plausible latencies, and a completely different grader.
+    """
+
+
 def chat_completions_endpoint(base_url: str) -> str:
     endpoint = base_url.rstrip("/")
     return endpoint if endpoint.endswith("/chat/completions") else endpoint + "/chat/completions"
@@ -163,6 +172,7 @@ class QwenEvidenceScorer:
         max_output_tokens_per_candidate: int = 0,
         max_candidate_tokens: int = 32_000,
         max_request_tokens: int = 64_000,
+        strict_model: bool = True,
     ):
         if batch_size < 1 or concurrency < 1:
             raise ValueError("Qwen batch size and concurrency must be positive")
@@ -189,6 +199,8 @@ class QwenEvidenceScorer:
         self.scoring_scale = scoring_scale
         self.fill_missing_score = fill_missing_score
         self.max_output_tokens_per_candidate = max_output_tokens_per_candidate
+        self.strict_model = strict_model
+        self.model_mismatches: list[dict[str, str]] = []
         self.max_candidate_tokens = max_candidate_tokens
         self.max_request_tokens = max_request_tokens
         self.encoding = tiktoken.get_encoding("o200k_base")
@@ -346,6 +358,23 @@ class QwenEvidenceScorer:
             "qwen_evidence", self.endpoint, self.api_key, payload
         )
         elapsed_ms = round((time.perf_counter() - started) * 1000)
+        actual_model = response.get("model") or self.model
+        # A gateway that cannot reach the requested model may silently substitute a
+        # different one and still return HTTP 200.  That poisons the science without
+        # any error surfacing, so a mismatch is treated as a hard protocol failure in
+        # strict mode.  Non-strict mode records the mismatch and lets callers decide.
+        if actual_model != self.model:
+            self.model_mismatches.append(
+                {"requested": self.model, "actual": actual_model}
+            )
+            if self.strict_model:
+                raise QwenModelMismatch(
+                    f"Qwen model identity changed: requested {self.model!r}, "
+                    f"received {actual_model!r}. The gateway is routing this request "
+                    "to a different deployment; results would not be comparable. "
+                    "Start a run whose configured model is actually served, or pass a "
+                    "model explicitly with --evidence-model."
+                )
         try:
             content = response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
@@ -367,7 +396,7 @@ class QwenEvidenceScorer:
             "attempts": attempt,
             "input_tokens": usage["input_tokens"],
             "output_tokens": usage["output_tokens"],
-            "model": response.get("model") or self.model,
+            "model": actual_model,
             "latency_ms": elapsed_ms,
             "repaired_keys": [f"{emitted}->{wanted}" for emitted, wanted in repairs],
             "imputed_keys": missing,
@@ -388,6 +417,10 @@ class QwenEvidenceScorer:
                         state, candidates, attempt
                     )
                     return scores, detail
+                except QwenModelMismatch:
+                    # Retrying cannot help: the gateway will keep routing to the same
+                    # substitute deployment.  Fail immediately with the specific error.
+                    raise
                 except QwenProtocolError as error:
                     last_error = error
             raise QwenProtocolError(f"Qwen score protocol failed after retry: {last_error}")

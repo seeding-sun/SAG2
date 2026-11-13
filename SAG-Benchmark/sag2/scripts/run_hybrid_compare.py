@@ -88,6 +88,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedding-dimension", type=int, default=1024)
     parser.add_argument("--evidence-base-url")
     parser.add_argument("--evidence-model")
+    parser.add_argument(
+        "--no-strict-model",
+        action="store_true",
+        help=(
+            "Accept responses from a different model than --evidence-model. The default "
+            "aborts the run, because a gateway that cannot reach the requested model may "
+            "silently substitute a weaker one and still return HTTP 200"
+        ),
+    )
     parser.add_argument("--evidence-api-key-env", default="SAG_EVIDENCE_API_KEY")
     parser.add_argument("--evidence-batch-size", type=int, default=10)
     parser.add_argument("--evidence-concurrency", type=int, default=4)
@@ -347,6 +356,7 @@ async def run(args: argparse.Namespace) -> None:
                         max_output_tokens_per_candidate=(
                             args.max_output_tokens_per_candidate
                         ),
+                        strict_model=not args.no_strict_model,
                     )
                     result = await search_sag2(
                         index,

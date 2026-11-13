@@ -5,6 +5,7 @@ import pytest
 
 from qwen_evidence_scorer import (
     QwenEvidenceScorer,
+    QwenModelMismatch,
     QwenProtocolError,
     parse_grades,
     parse_scores,
@@ -190,7 +191,7 @@ class FakeQwenJournal:
         request = json.loads(payload["messages"][1]["content"])
         scores = {key: 0.75 for key in request["candidates"]}
         return {
-            "model": "qwen-fake",
+            "model": payload["model"],
             "choices": [
                 {
                     "message": {
@@ -220,7 +221,7 @@ def test_scorer_returns_search_compatible_scores(tmp_path):
     scored, usage = asyncio.run(scorer.score("question", candidates, []))
     assert [row["id"] for row in scored] == [1, 2]
     assert all(row["jev_score"] == 0.75 for row in scored)
-    assert all(row["jev_model"] == "qwen-fake" for row in scored)
+    assert all(row["jev_model"] == "qwen-test" for row in scored)
     assert all("jev_grade" not in row for row in scored)
     assert usage["judgments"] == 2
     assert usage["requests"] == 1
@@ -244,7 +245,7 @@ class FakeGradeJournal:
             for key in request["candidates"]
         }
         return {
-            "model": "qwen-fake",
+            "model": payload["model"],
             "choices": [
                 {
                     "message": {
@@ -294,7 +295,7 @@ class CapturingJournal:
         request = json.loads(payload["messages"][1]["content"])
         scores = {key: 0.5 for key in request["candidates"]}
         return {
-            "model": "qwen-fake",
+            "model": payload["model"],
             "choices": [{"message": {"content": json.dumps({"scores": scores})}}],
             "usage": {"prompt_tokens": 20, "completion_tokens": 5},
         }
@@ -362,3 +363,104 @@ def test_grade_mode_rejects_an_unknown_scoring_scale(tmp_path):
             journal_dir=tmp_path,
             scoring_scale="zero_to_ten",
         )
+
+
+class SubstitutingJournal:
+    """Reproduces the real incident: HTTP 200, plausible body, a different model."""
+
+    def __init__(self, actual_model: str):
+        self.actual_model = actual_model
+        self.calls = 0
+
+    async def post(self, service, endpoint, api_key, payload):
+        self.calls += 1
+        request = json.loads(payload["messages"][1]["content"])
+        scores = {key: 0.5 for key in request["candidates"]}
+        return {
+            "model": self.actual_model,
+            "choices": [{"message": {"content": json.dumps({"scores": scores})}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+        }
+
+
+def _mismatch_scorer(tmp_path, *, strict_model):
+    scorer = QwenEvidenceScorer(
+        None,
+        "http://offline/v1",
+        "qwen3.5-122b-a10b",
+        "unused",
+        journal_dir=tmp_path,
+        batch_size=10,
+        response_format=False,
+        strict_model=strict_model,
+    )
+    scorer.journal = SubstitutingJournal("qwen3.8-27b")
+    return scorer
+
+
+def test_a_silently_substituted_model_fails_the_run(tmp_path):
+    """The gateway remapped 122B to 27B mid-run; without this the run looks valid."""
+    scorer = _mismatch_scorer(tmp_path, strict_model=True)
+    candidates = [{"id": 1, "title": "One", "content": "first"}]
+    with pytest.raises(QwenModelMismatch) as caught:
+        asyncio.run(scorer.score("question", candidates, []))
+    message = str(caught.value)
+    assert "qwen3.5-122b-a10b" in message
+    assert "qwen3.8-27b" in message
+
+
+def test_the_mismatch_names_both_models_for_auditing(tmp_path):
+    scorer = _mismatch_scorer(tmp_path, strict_model=True)
+    candidates = [{"id": 1, "title": "One", "content": "first"}]
+    with pytest.raises(QwenModelMismatch):
+        asyncio.run(scorer.score("question", candidates, []))
+    assert scorer.model_mismatches == [
+        {"requested": "qwen3.5-122b-a10b", "actual": "qwen3.8-27b"}
+    ]
+
+
+def test_non_strict_mode_records_the_substitution_instead_of_raising(tmp_path):
+    """Keeps already-collected data usable while still marking it as contaminated."""
+    scorer = _mismatch_scorer(tmp_path, strict_model=False)
+    candidates = [{"id": 1, "title": "One", "content": "first"}]
+    scored, usage = asyncio.run(scorer.score("question", candidates, []))
+    assert scored[0]["jev_model"] == "qwen3.8-27b"
+    assert usage["batches"][0]["model"] == "qwen3.8-27b"
+    assert scorer.model_mismatches == [
+        {"requested": "qwen3.5-122b-a10b", "actual": "qwen3.8-27b"}
+    ]
+
+
+def test_a_response_without_a_model_field_is_trusted(tmp_path):
+    """Some OpenAI-compatible servers omit `model`; absence is not evidence of a swap."""
+
+    class SilentJournal:
+        async def post(self, service, endpoint, api_key, payload):
+            request = json.loads(payload["messages"][1]["content"])
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"scores": {key: 0.5 for key in request["candidates"]}}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+            }
+
+    scorer = QwenEvidenceScorer(
+        None,
+        "http://offline/v1",
+        "qwen-test",
+        "unused",
+        journal_dir=tmp_path,
+        response_format=False,
+    )
+    scorer.journal = SilentJournal()
+    scored, usage = asyncio.run(
+        scorer.score("question", [{"id": 1, "title": "One", "content": "first"}], [])
+    )
+    assert scorer.model_mismatches == []
+    assert usage["batches"][0]["model"] == "qwen-test"
