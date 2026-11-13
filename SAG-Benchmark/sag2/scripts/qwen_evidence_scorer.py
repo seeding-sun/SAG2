@@ -41,17 +41,37 @@ def _is_one_char_deletion(shorter: str, longer: str) -> bool:
     return any(longer[:i] + longer[i + 1 :] == shorter for i in range(len(longer)))
 
 
+def _is_one_char_substitution(left: str, right: str) -> bool:
+    """Return True when two equal-length digit runs differ in exactly one position."""
+    if len(left) != len(right) or left == right:
+        return False
+    return sum(a != b for a, b in zip(left, right, strict=True)) == 1
+
+
+def _digit_distance_1(emitted: str, wanted: str) -> bool:
+    """True when `emitted` looks like `wanted` with one digit dropped or mistyped."""
+    return _is_one_char_deletion(emitted, wanted) or _is_one_char_substitution(
+        emitted, wanted
+    )
+
+
 def repair_deleted_digit_key(
     scores: dict, expected_keys: set[str]
 ) -> tuple[dict, list[tuple[str, str]]]:
     """Repair one unambiguous candidate-key typo.
 
-    Qwen occasionally drops a single digit from a long candidate id, e.g. emitting
-    ``candidate_1017`` for ``candidate_10197``. The mapping is only accepted when it is
-    the sole possible reading: exactly one expected key is missing, exactly one
-    unexpected key is present, and the unexpected key equals the missing key with
-    exactly one character deleted. Anything else is left untouched so the caller
-    still raises.
+    Qwen occasionally corrupts a long candidate id, most often by dropping a single
+    digit (``candidate_1017`` for ``candidate_10197``) or by mistyping the last digit
+    (``candidate_11483`` for ``candidate_11486``). The mapping is only accepted when it
+    is the sole possible reading:
+
+    * exactly one expected key is missing and exactly one unexpected key is present;
+    * the unexpected key is one digit-drop or one digit-substitution away from the
+      missing key;
+    * no *other* expected key is equally close to the unexpected key, so the intended
+      target cannot be ambiguous.
+
+    Anything else is left untouched so the caller still raises.
     """
     missing = sorted(expected_keys - set(scores))
     extra = sorted(set(scores) - expected_keys)
@@ -61,7 +81,19 @@ def repair_deleted_digit_key(
     prefix = "candidate_"
     if not (wanted.startswith(prefix) and emitted.startswith(prefix)):
         return scores, []
-    if not _is_one_char_deletion(emitted[len(prefix) :], wanted[len(prefix) :]):
+    emitted_digits, wanted_digits = emitted[len(prefix) :], wanted[len(prefix) :]
+    if not _digit_distance_1(emitted_digits, wanted_digits):
+        return scores, []
+    # Guard against a typo that sits one edit away from several real candidates: in
+    # that case the model's intended id cannot be recovered, so refuse to guess.
+    rivals = [
+        key
+        for key in expected_keys
+        if key != wanted
+        and key.startswith(prefix)
+        and _digit_distance_1(emitted_digits, key[len(prefix) :])
+    ]
+    if rivals:
         return scores, []
     repaired = {(wanted if key == emitted else key): value for key, value in scores.items()}
     return repaired, [(emitted, wanted)]
@@ -74,13 +106,16 @@ def _unwrap_keyed_object(
     repairs: list[tuple[str, str]] | None = None,
     missing: list[str] | None = None,
     fill_missing: float | None = None,
+    dropped: list[str] | None = None,
 ) -> dict:
     """Decode the model's JSON envelope and align its keys with the candidate ids.
 
-    Qwen occasionally omits a candidate outright (no typo to repair). `fill_missing`
-    decides what happens then: `None` keeps the strict historical behaviour and raises,
-    while a numeric value scores every omitted candidate at that value. Filling is
-    recorded through `missing` so the run states exactly which ids it imputed.
+    Qwen occasionally corrupts the key set: it may omit a candidate outright, or emit
+    an id that belongs to no candidate in the batch. `fill_missing` decides what
+    happens then. `None` keeps the strict historical behaviour and raises, while a
+    numeric value scores every omitted candidate at that value and discards invented
+    keys. Filling and dropping are both recorded so the run states exactly what it
+    imputed and what it ignored.
     """
     if not isinstance(content, str) or not content.strip():
         raise QwenProtocolError("Qwen returned empty content")
@@ -101,12 +136,25 @@ def _unwrap_keyed_object(
             repairs.extend(applied)
         omitted = sorted(expected_keys - set(scores))
         unexpected = sorted(set(scores) - expected_keys)
-        # Only a pure omission is imputable: an extra key means the model invented an
-        # id, so the response is untrustworthy rather than merely incomplete.
-        if omitted and not unexpected and fill_missing is not None:
+        # A pure omission is imputable.  An unexpected key can never be trusted as a
+        # grade, but aborting a long run over a mistyped id costs an entire arm, so in
+        # imputation mode the invented key is dropped and the omitted candidates are
+        # imputed.  Both decisions are recorded, so the run stays auditable.
+        if fill_missing is not None and omitted:
+            # A single stray id is a typo; a large share of stray ids means the model
+            # answered a different batch entirely.  Refuse that instead of quietly
+            # imputing most of the round at the floor value.
+            if len(unexpected) > max(1, len(expected_keys) // 5):
+                raise QwenProtocolError(
+                    f"Qwen returned {len(unexpected)} keys outside this batch "
+                    f"({unexpected[:5]}); refusing to impute wholesale"
+                )
             if missing is not None:
                 missing.extend(omitted)
-            scores = {**scores, **{key: fill_missing for key in omitted}}
+            if dropped is not None:
+                dropped.extend(unexpected)
+            scores = {k: v for k, v in scores.items() if k in expected_keys}
+            scores.update({key: fill_missing for key in omitted})
         if set(scores) != expected_keys:
             raise QwenProtocolError(
                 f"Qwen score keys do not match candidates; missing={omitted[:5]}, "
@@ -121,9 +169,10 @@ def parse_scores(
     repairs: list[tuple[str, str]] | None = None,
     missing: list[str] | None = None,
     fill_missing: float | None = None,
+    dropped: list[str] | None = None,
 ) -> dict[str, float]:
     scores = _unwrap_keyed_object(
-        content, expected_keys, "scores", repairs, missing, fill_missing
+        content, expected_keys, "scores", repairs, missing, fill_missing, dropped
     )
     normalized = {}
     for key, value in scores.items():
@@ -139,11 +188,12 @@ def parse_grades(
     repairs: list[tuple[str, str]] | None = None,
     missing: list[str] | None = None,
     fill_missing: int | None = None,
+    dropped: list[str] | None = None,
 ) -> dict[str, int]:
     """Decode grade-mode output, which must use one of the rubric's discrete anchors."""
     allowed = set(GRADE_RUBRIC)
     grades = _unwrap_keyed_object(
-        content, expected_keys, "grades", repairs, missing, fill_missing
+        content, expected_keys, "grades", repairs, missing, fill_missing, dropped
     )
     normalized = {}
     for key, value in grades.items():
@@ -381,13 +431,14 @@ class QwenEvidenceScorer:
             raise QwenProtocolError("Qwen response has no chat completion content") from error
         repairs: list[tuple[str, str]] = []
         missing: list[str] = []
+        dropped: list[str] = []
         scores = (
             parse_grades(
-                content, expected, repairs, missing, self.fill_missing_score
+                content, expected, repairs, missing, self.fill_missing_score, dropped
             )
             if graded
             else parse_scores(
-                content, expected, repairs, missing, self.fill_missing_score
+                content, expected, repairs, missing, self.fill_missing_score, dropped
             )
         )
         usage = token_usage(response)
@@ -400,6 +451,7 @@ class QwenEvidenceScorer:
             "latency_ms": elapsed_ms,
             "repaired_keys": [f"{emitted}->{wanted}" for emitted, wanted in repairs],
             "imputed_keys": missing,
+            "dropped_keys": dropped,
             "max_tokens": output_budget,
         }, attempt
 
@@ -473,6 +525,7 @@ class QwenEvidenceScorer:
             "scoring_scale": self.scoring_scale,
             "fill_missing_score": self.fill_missing_score,
             "imputed_judgments": sum(len(detail["imputed_keys"]) for detail in details),
+            "dropped_judgments": sum(len(detail["dropped_keys"]) for detail in details),
             "batches": details,
             "input_tokens": sum(detail["input_tokens"] for detail in details),
             "output_tokens": sum(detail["output_tokens"] for detail in details),

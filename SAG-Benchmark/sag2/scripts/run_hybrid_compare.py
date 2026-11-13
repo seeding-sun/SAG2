@@ -27,7 +27,16 @@ from run_sag2_benchmark import (
     unique_documents,
     write_json,
 )
-from sag2 import DEFAULT_CHUNK_CHARS, CorpusIndex, search_sag2
+from sag2 import DEFAULT_CHUNK_CHARS, GRADE_RUBRIC, CorpusIndex, search_sag2
+
+# Fingerprints that record which code produced a run.  They may legitimately move
+# when an arm is resumed after a bug fix that does not touch retrieval or scoring
+# semantics; every other config key stays hard-frozen.
+CODE_FINGERPRINTS = {
+    "sag2_code_sha256",
+    "runner_code_sha256",
+    "qwen_scorer_sha256",
+}
 from sample_identity import (
     index_unique_records,
     validate_identity_coverage,
@@ -68,6 +77,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--accept-code-change",
+        metavar="REASON",
+        default=None,
+        help=(
+            "Allow --resume when the ONLY differing config keys are code fingerprints, "
+            "recording REASON in config.json. Never use it to paper over a change in "
+            "retrieval or scoring semantics."
+        ),
+    )
     parser.add_argument("--candidate-k", type=int, default=100)
     parser.add_argument("--seed-k", type=int, default=10)
     parser.add_argument("--max-hops", type=int, default=1)
@@ -143,6 +162,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.scoring_scale == "grade":
+        # Grade mode quantises to discrete anchors, so any threshold inside the same
+        # interval selects the identical set.  Saying so out loud prevents a "tuned"
+        # threshold that silently changed nothing (tau=0.3 is tau=0.4).
+        anchors = sorted(anchor / 10 for anchor in GRADE_RUBRIC)
+        below = [anchor for anchor in anchors if anchor >= args.grade_threshold]
+        effective = below[0] if below else anchors[-1] + 1
+        if abs(effective - args.grade_threshold) > 1e-9:
+            logging.warning(
+                "grade-threshold %.2f selects the same candidates as %.2f, because grades "
+                "are quantised to %s; use 0.20 to admit the grade-2 band",
+                args.grade_threshold,
+                effective,
+                anchors,
+            )
     for key in (
         "candidate_k",
         "seed_k",
@@ -256,7 +290,33 @@ async def run(args: argparse.Namespace) -> None:
     if config_path.exists():
         previous = json.loads(config_path.read_text(encoding="utf-8"))
         if previous != config:
-            raise ValueError(f"Resume configuration differs from {config_path}")
+            changed = sorted(
+                key
+                for key in set(previous) | set(config)
+                if previous.get(key) != config.get(key)
+            )
+            code_only = set(changed) <= CODE_FINGERPRINTS
+            if not (args.accept_code_change and code_only):
+                raise ValueError(
+                    f"Resume configuration differs from {config_path} in {changed}; "
+                    "pass --accept-code-change only when the sole difference is a "
+                    "code fingerprint from a fix that leaves scoring semantics intact"
+                )
+            # Record the override so the artifact still shows that the arm was
+            # resumed across a code change, and which fingerprints moved.
+            previous.setdefault("resume_code_changes", []).append(
+                {
+                    "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "changed": {key: [previous.get(key), config.get(key)] for key in changed},
+                    "reason": args.accept_code_change,
+                }
+            )
+            previous.update(
+                {key: config[key] for key in changed if key not in {"resume_code_changes"}}
+            )
+            write_json(config_path, previous)
+        else:
+            write_json(config_path, config)
     else:
         write_json(config_path, config)
 

@@ -119,18 +119,62 @@ def test_parse_grades_keeps_the_strict_default_when_omission_is_unhandled():
         parse_grades('{"grades":{"candidate_1":8}}', {"candidate_1", "candidate_3"})
 
 
-def test_imputation_refuses_a_response_that_invents_an_unknown_key():
-    """An extra key means the whole envelope is untrustworthy, so filling must not hide it."""
+def test_imputation_drops_one_invented_key_and_records_it():
+    """A single stray id is a typo: drop it, impute the omission, and record both.
+
+    Aborting a 100-question arm over one mistyped candidate id costs far more than a
+    conservatively imputed grade, but the run must state exactly what it discarded.
+    """
     imputed: list[str] = []
+    dropped: list[str] = []
+    grades = parse_grades(
+        '{"grades":{"candidate_1":8,"candidate_9999":6}}',
+        {"candidate_1", "candidate_3"},
+        None,
+        imputed,
+        0,
+        dropped,
+    )
+    assert grades == {"candidate_1": 8, "candidate_3": 0}
+    assert imputed == ["candidate_3"]
+    assert dropped == ["candidate_9999"]
+
+
+def test_imputation_refuses_wholesale_key_corruption():
+    """When most keys belong to no candidate, the model answered another batch."""
     with pytest.raises(QwenProtocolError):
         parse_grades(
-            '{"grades":{"candidate_1":8,"candidate_9999":6}}',
-            {"candidate_1", "candidate_3"},
+            '{"grades":{"candidate_91":8,"candidate_92":6,"candidate_93":4,'
+            '"candidate_94":2,"candidate_95":0}}',
+            {"candidate_1", "candidate_2"},
             None,
-            imputed,
+            None,
             0,
+            None,
         )
-    assert imputed == []
+
+
+def test_repairs_a_single_mistyped_digit_when_the_target_is_unambiguous():
+    repairs: list[tuple[str, str]] = []
+    grades = parse_grades(
+        '{"grades":{"candidate_2018":6,"candidate_11483":10}}',
+        {"candidate_2018", "candidate_11486"},
+        repairs,
+    )
+    assert grades == {"candidate_2018": 6, "candidate_11486": 10}
+    assert repairs == [("candidate_11483", "candidate_11486")]
+
+
+def test_refuses_a_mistyped_digit_that_is_equally_close_to_two_candidates():
+    """If the emitted id could mean either neighbour, guessing would corrupt a grade."""
+    with pytest.raises(QwenProtocolError):
+        parse_grades(
+            '{"grades":{"candidate_11483":10,"candidate_11489":6}}',
+            {"candidate_11486", "candidate_11489"},
+            None,
+            None,
+            None,
+        )
 
 
 def test_parse_scores_imputes_an_omission_on_the_binary_scale():

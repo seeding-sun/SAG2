@@ -219,3 +219,48 @@ def test_hop_two_history_is_unfiltered_at_the_default_threshold(tmp_path):
     # Nothing is filtered, so the whole accumulated history is eligible.
     assert hop_two["previous_eligible_count"] == len(seen)
     assert hop_two["previous_eligible_count"] > 1
+
+
+def test_a_threshold_inside_a_grade_gap_is_reported_as_a_no_op(caplog):
+    """Grades are quantised to {0,2,4,6,8,10}, so tau=0.3 selects exactly the tau=0.4 set.
+
+    Silently accepting 0.3 would let an experiment claim a recalibration that never
+    happened, which is exactly the mistake this warning exists to catch.
+    """
+    import logging
+
+    import run_hybrid_compare as runner
+
+    parser = runner.build_parser()
+    args = parser.parse_args(
+        [
+            "--retrieval-mode", "bm25",
+            "--sample-file", "sample.json",
+            "--output-dir", "out",
+            "--scoring-scale", "grade",
+            "--grade-threshold", "0.3",
+        ]
+    )
+    with caplog.at_level(logging.WARNING):
+        runner.validate_args(parser, args)
+    assert any("same candidates" in record.getMessage() for record in caplog.records)
+
+
+def test_a_threshold_on_a_grade_anchor_is_not_warned(caplog):
+    import logging
+
+    import run_hybrid_compare as runner
+
+    parser = runner.build_parser()
+    args = parser.parse_args(
+        [
+            "--retrieval-mode", "bm25",
+            "--sample-file", "sample.json",
+            "--output-dir", "out",
+            "--scoring-scale", "grade",
+            "--grade-threshold", "0.2",
+        ]
+    )
+    with caplog.at_level(logging.WARNING):
+        runner.validate_args(parser, args)
+    assert not [r for r in caplog.records if "same candidates" in r.getMessage()]

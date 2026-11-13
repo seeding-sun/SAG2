@@ -892,12 +892,101 @@ D1-H1: {'qwen3.5-122b-a10b': 1834, 'qwen3.8-27b': 260}  # 混入 12.42%
 
 ---
 
-## 20. 校验命令
+## 20. 事故 10（协议 / 编排 / 续跑）：一次键名错位引发的三层故障
+
+### 20.1 事实
+
+`D1B1-27B` 跑到 **39/100** 时整个 TaskGroup 崩掉：
+
+```text
+qwen_evidence_scorer.QwenProtocolError: Qwen score protocol failed after retry:
+Qwen score keys do not match candidates; missing=['candidate_11486'], extra=['candidate_11483']
+```
+
+模型把 `candidate_11486` 的**最后一位写错**（6 → 3），产出 `candidate_11483`。
+
+与此同时，链脚本却打印了 `=== chain complete ===`，看上去像全部成功。
+
+### 20.2 定性：三个独立缺陷叠加
+
+**A. 协议层：既有修复只覆盖"少一位"，没覆盖"错一位"**
+
+`repair_deleted_digit_key` 的判据是 `_is_one_char_deletion`，即 emitted 必须等于 wanted 删除一个字符。`11483` 与 `11486` 长度相同、只差最后一位，属于**替换**而非**删除**，因此不匹配，直接抛错。而 `fill_missing_score` 只在"纯遗漏、无多余键"时才生效，这里是"遗漏一个 + 多出一个"，所以两条兜底路径都走不到。
+
+**B. 编排层：链脚本不看返回码**
+
+```bash
+run_arm D1B1-27B ...     # 返回值被丢弃
+echo "=== chain complete ==="
+```
+
+`run_arm` 内部 `return $rc`，但调用处没有 `|| exit 1`。所以某一臂彻底失败时，脚本仍会打印"完成"。**这是比崩溃本身更危险的缺陷**——如果没有主动核对题数，这条链会被当成"全绿"记录下来。
+
+**C. 续跑层：代码指纹哈希守卫拦死恢复**
+
+修好 scorer 后，`config.json` 里的 `qwen_scorer_sha256` 与当前文件不一致，`--resume` 直接拒绝：
+
+```text
+ValueError: Resume configuration differs from .../D1B1-27B/config.json
+```
+
+守卫本身是对的（防止在语义变更后拼接两个不同实现的结果），但当时**没有任何合法的越权通道**，导致"崩溃 → 修复 → 无法续跑 → 只能重跑 100 题"。
+
+### 20.3 影响
+
+**没有损失已算完的工作**：checkpoint 保住了 39 题，续跑只补 61 题。总代价约 40 分钟（修复 + 重跑）。
+
+### 20.4 修复
+
+1. **协议层：支持单字符替换修复**。新增 `_is_one_char_substitution`，与删除合并为 `_digit_distance_1`。
+2. **协议层：加歧义守卫**。若错键与**多个**候选都只差一位，拒绝猜测（例如批次内同时存在 `11486` 和 `11489`，而模型写了 `11483`）。此时仍抛错。
+3. **协议层：允许丢弃单个游离键**。在 `fill_missing_score` 模式下，真不存在的键不再阻断整轮：丢弃该键、按 `fill_missing` 补遗漏项，并把丢弃的键记入 `batches[].dropped_keys` 与汇总 `dropped_judgments`。**判决值因此不会被伪造**（丢弃意味着该候选被保守降到下限），只是不再中断长跑。
+4. **协议层：比例守卫**。若一批里超过 20% 的键不属于本批（最少容忍 1 个），说明模型答的是另一个批次，仍然抛错——避免"整批静默补 0"把 run 变成空壳。
+5. **编排层：`|| exit 1`**。任一臂失败即终止链，杜绝谎报完成。
+6. **续跑层：`--accept-code-change "理由"`**。仅当差异键**全部**属于代码指纹（`sag2_code_sha256` / `runner_code_sha256` / `qwen_scorer_sha256`）时放行；检索或评分语义相关的键一旦变化仍然硬拒。放行时把变更前后哈希与理由写入 `config.json` 的 `resume_code_changes`，保证工件可审计。
+
+单元测试 **137 → 142**，新增 5 条（替换位修复、歧义拒绝、单游离键丢弃并记录、整批错乱拒绝，以及 §20.6 的阈值空操作提示）：
+
+```bash
+test_repairs_a_single_mistyped_digit_when_the_target_is_unambiguous
+test_refuses_a_mistyped_digit_that_is_equally_close_to_two_candidates
+test_imputation_drops_one_invented_key_and_records_it
+test_imputation_refuses_wholesale_key_corruption
+```
+
+### 20.5 教训
+
+1. **"失败"和"看起来成功"必须能区分。** 链式脚本不检查子进程返回码，等于把运维安全网拆了。任何 `run_arm` 式封装都要 `|| exit 1`。
+2. **长跑的崩溃点不是随机分布的。** 这次错误发生在第 39 题，前 38 题一个错键都没有——说明该故障是低频事件，**跑 100 题几乎必然会触发一次**。低频协议异常必须在协议层消化，不能指望"足够幸运"。
+3. **兜底策略要标记来源，而不是掩盖。** 补 0 分和丢弃键都是降级，必须写进产物（`imputed_keys` / `dropped_keys`），否则事后无法判断某题的分数是模型给的还是系统填的。
+4. **守卫要留合法出口。** 只拦不放的守卫在真实故障中会变成二次伤害；正确做法是放行 + 强制说明原因 + 留痕。
+5. **不要用"猜"去修复模型输出。** 替换位修复只有在目标唯一时才允许；一旦可能对应多个候选，宁可抛错也不能随便赋值——一次误判会污染该题全部后续推理。
+
+### 20.6 附带发现（方法论）：离散档位让"阈值调参"出现空操作
+
+`GRADE_RUBRIC` 的锚点是 `{0, 2, 4, 6, 8, 10}`，`jev_score = grade / 10`，因此 `grade_threshold` 只在区间边界上有区分力：
+
+| 设定 | 实际选中档位 | 是否有效 |
+|---|---|---|
+| 0.0 | ≥ 0 | 全放行 |
+| 0.2 | ≥ 2 | 有效 |
+| **0.3** | **≥ 4** | **与 0.4 完全等价（空操作）** |
+| 0.4 | ≥ 4 | 当前默认 |
+| 0.5 | ≥ 6 | 与 0.6 等价 |
+| 0.6 | ≥ 6 | 有效 |
+
+原本计划的"扫描 τ∈{0.2, 0.3, 0.4}"里有三分之一是空操作。这类陷阱的危险在于它**不会报错**：跑完得到一个和 0.4 一模一样的数字，很容易被解读成"重标定无效"。
+
+**已在代码里加提示**：`run_hybrid_compare.validate_args` 在 grade 模式下检查阈值是否落在档位间隙，若是则 `logging.warning` 指出它等价于哪个边界值。新增 2 条测试覆盖该提示的触发与不触发。
+
+---
+
+## 21. 校验命令
 
 ```bash
 cd /data/machine_learning/cmh/知识库/SAG2/SAG-Benchmark/sag2
 
-# 单元测试（应 133 passed）
+# 单元测试（应 142 passed）
 .venv/bin/python -m pytest -q
 
 # 静态检查
@@ -916,6 +1005,16 @@ done
 
 # 排序复现自校验（应输出 100/100）
 .venv/bin/python scripts/diagnostics/diagnose_ranking.py --all
+
+# 检查续跑是否跨过代码变更（应无输出；有输出说明该臂跨版本拼接）
+grep -l resume_code_changes ../../output/*/H*/*/config.json 2>/dev/null
+
+# 检查协议降级量（补 0 / 丢弃键都不应为大数）
+python3 -c "
+import json,glob
+for f in sorted(glob.glob('../../output/*/H*/*/metrics.json')):
+    d=json.load(open(f))
+    print(f.split('/')[-2], d.get('judgments'), d.get('imputed_judgments'), d.get('dropped_judgments'))"
 
 # 检查每次 run 用的代码版本
 for f in ../../output/abc-100/H*/?1-H*/config.json; do

@@ -51,13 +51,15 @@ run_arm() {
   return $rc
 }
 
+# Failures must stop the chain: a silently failed arm used to be reported as
+# "chain complete" because the helper's exit status was never checked.
 run_arm D1-27B --retrieval-mode bm25 \
   --scoring-scale grade --grade-threshold 0.4 --fill-missing-score 0 \
-  --max-output-tokens-per-candidate 32
+  --max-output-tokens-per-candidate 32 || exit 1
 
 run_arm D1B1-27B --retrieval-mode hybrid \
   --rrf-k 60 --pool-k 100 --bm25-weight 1.0 --dense-weight 1.0 \
   --scoring-scale grade --grade-threshold 0.4 --fill-missing-score 0 \
-  --max-output-tokens-per-candidate 32
+  --max-output-tokens-per-candidate 32 || exit 1
 
 echo "=== $(date '+%F %T') chain complete ==="
