@@ -593,12 +593,73 @@ pgrep -af 'run_hybrid_compare'    # 必须确认为空再继续
 
 ---
 
-## 14. 校验命令
+## 14. 事故 6：模型整条漏判一个候选，跑 11 题后整轮崩溃
+
+### 现象
+
+`D1-H1`（100 题，`batch=10`）2026-11-12 23:44 启动，00:09 崩溃，`details.jsonl` 停在 11/100。日志尾部：
+
+```
+qwen_evidence_scorer.QwenProtocolError:
+Qwen score protocol failed after retry:
+Qwen score keys do not match candidates; missing=['candidate_7623'], extra=[]
+```
+
+`TaskGroup` 遇到 `QwenProtocolError` 直接解散，整轮退出——和事故 5 一样，**单题失败带走整轮**。
+
+### 根因
+
+不是网络抖动，是**模型回应里整条漏掉了 `candidate_7623`**：10 个候选只回了 9 个 grade，`finish_reason=stop`，输出 105 token（未截断）。
+
+对全部已落盘响应的审计：
+
+| run | 响应数 | key 覆盖不全 | 频率 |
+| --- | --- | --- | --- |
+| `D1-H1`（本次，grade 模式） | 254 | 2（同一题两次重试） | 0.8% |
+| `A1-H1`（100 题，binary 模式） | 2081 | 1 | 0.05% |
+
+两个结论：
+
+1. **漏判是模型的固有失误**，与 6 档刻度无关（A1 也有，只是那一次恰好"少一个 + 多一个"被删位修复救回）。
+2. **原重试机制对这类错误完全无效**：请求日志把 HTTP 200 的响应体按 payload 哈希落盘，重试读缓存拿到同一份内容，必然同样失败——所以日志里是"failed after retry"，实际上只尝试了一次。
+
+按 0.5% 量级估算，100 题约 4000 个请求，**必然撞上多次**。不修就无法无人值守。
+
+### 修复：缺键补 0，并把补全写进 trace
+
+`qwen_evidence_scorer.py`：
+
+- `_unwrap_keyed_object(..., missing=None, fill_missing=None)`：删位修复后如果仍然只有"缺"、没有"多"，且 `fill_missing` 非 `None`，则对缺失的 key 补该值，并把补齐的 id 追加进 `missing`（落到 batch 的 `imputed_keys`）。
+- 补全只接受**纯缺失**：一旦出现模型凭空编造的 key（`extra` 非空），整份信封不可信，仍然抛错。
+- 新增构造参数 `fill_missing_score: float | None = None`，**默认 `None` 保持历史严格语义**（二值/grade 两条路径都零回归）。grade 模式下必须给刻度锚点（`0/2/.../10`），binary 模式下必须在 `[0,1]`，构造期校验。
+- 聚合：`usage["imputed_judgments"]`，`usage["fill_missing_score"]`，每个 batch 的 `imputed_keys`。
+
+`sag2.py`：`usage` 显式聚合新增 `imputed_judgments`；`run_hybrid_compare.py`：新增 `--fill-missing-score` 并写入 `config.json`。
+
+**为什么补 0 而不是重试或丢弃**：
+
+- 补 0 语义诚实——"模型没有对这条给出任何正面证据"，与 rubric 的 `0`（不相关）同向，且**永远不会伪造种子**（0 < `grade_threshold=0.4`）。
+- 重试已被证明无效（缓存命中同一份坏响应）；要真正重试得做请求日志失效化，会破坏"响应不可变"这一可复现前提。
+- 丢弃该候选会让候选池变 9 条，破坏与 A1 的可比性。
+
+代价量化：本次只有 `2hop__359312_18803` 的 1 个候选被补 0（1/4000 量级），对 Recall 的影响远小于噪声。
+
+### 处理与代价
+
+- 补全策略进入 `config.json`，与既有 config 冲突，故旧 config 存档为 `doc/artifacts/D1-H1-config-before-imputation.json` 后重写。
+- 中途又改了一次 `sag2.py`（仅为把 `imputed_judgments` 聚合进 `jev_usage`），因此 `sag2_code_sha256` 变化，手工同步 config 并回填已写 15 行的该字段（该值可由 batch 的 `imputed_keys` 逐条复算，非估计值）。
+- 重跑 15 题靠请求缓存秒级重放，实际只损失 00:09–08:55 的无人值守时间（约 8.7 小时），不是 8.7 小时的算力。
+
+**教训**：长跑任务里，凡是"模型返回结构"的断言都必须有可审计的降级路径；`TaskGroup` 与协议错误的组合等于"一题崩全轮"。这两条在事故 5 之后已经出现过一次，仍然只修了 token 上限、没修协议严格性。
+
+---
+
+## 15. 校验命令
 
 ```bash
 cd /data/machine_learning/cmh/知识库/SAG2/SAG-Benchmark/sag2
 
-# 单元测试（应 129 passed）
+# 单元测试（应 133 passed）
 .venv/bin/python -m pytest -q
 
 # 静态检查

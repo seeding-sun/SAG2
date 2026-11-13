@@ -92,6 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evidence-batch-size", type=int, default=10)
     parser.add_argument("--evidence-concurrency", type=int, default=4)
     parser.add_argument(
+        "--fill-missing-score",
+        type=float,
+        default=None,
+        help=(
+            "Score for a candidate the model omitted entirely. Unset keeps the strict "
+            "behaviour that aborts the run; in grade mode give a rubric anchor such as 0"
+        ),
+    )
+    parser.add_argument(
         "--max-output-tokens-per-candidate",
         type=int,
         default=0,
@@ -222,6 +231,7 @@ async def run(args: argparse.Namespace) -> None:
         "response_format": not args.no_response_format,
         "scoring_scale": args.scoring_scale,
         "grade_threshold": args.grade_threshold,
+        "fill_missing_score": args.fill_missing_score,
         "max_output_tokens_per_candidate": args.max_output_tokens_per_candidate,
         "pool_k": args.pool_k if args.retrieval_mode == "hybrid" else None,
         "rrf_k": args.rrf_k if args.retrieval_mode == "hybrid" else None,
@@ -328,6 +338,12 @@ async def run(args: argparse.Namespace) -> None:
                         concurrency=args.evidence_concurrency,
                         response_format=not args.no_response_format,
                         scoring_scale=args.scoring_scale,
+                        fill_missing_score=(
+                            int(args.fill_missing_score)
+                            if args.scoring_scale == "grade"
+                            and args.fill_missing_score is not None
+                            else args.fill_missing_score
+                        ),
                         max_output_tokens_per_candidate=(
                             args.max_output_tokens_per_candidate
                         ),

@@ -99,6 +99,52 @@ def test_parse_grades_repairs_one_deleted_digit_in_candidate_key():
     assert repairs == [("candidate_1017", "candidate_10197")]
 
 
+def test_parse_grades_imputes_a_pure_omission_when_the_policy_allows():
+    """Qwen sometimes drops a candidate outright; the run must state the filled ids."""
+    imputed: list[str] = []
+    grades = parse_grades(
+        '{"grades":{"candidate_1":8,"candidate_2":2}}',
+        {"candidate_1", "candidate_2", "candidate_3"},
+        None,
+        imputed,
+        0,
+    )
+    assert grades == {"candidate_1": 8, "candidate_2": 2, "candidate_3": 0}
+    assert imputed == ["candidate_3"]
+
+
+def test_parse_grades_keeps_the_strict_default_when_omission_is_unhandled():
+    with pytest.raises(QwenProtocolError):
+        parse_grades('{"grades":{"candidate_1":8}}', {"candidate_1", "candidate_3"})
+
+
+def test_imputation_refuses_a_response_that_invents_an_unknown_key():
+    """An extra key means the whole envelope is untrustworthy, so filling must not hide it."""
+    imputed: list[str] = []
+    with pytest.raises(QwenProtocolError):
+        parse_grades(
+            '{"grades":{"candidate_1":8,"candidate_9999":6}}',
+            {"candidate_1", "candidate_3"},
+            None,
+            imputed,
+            0,
+        )
+    assert imputed == []
+
+
+def test_parse_scores_imputes_an_omission_on_the_binary_scale():
+    imputed: list[str] = []
+    scores = parse_scores(
+        '{"scores":{"candidate_1":1.0}}',
+        {"candidate_1", "candidate_2"},
+        None,
+        imputed,
+        0.0,
+    )
+    assert scores == {"candidate_1": 1.0, "candidate_2": 0.0}
+    assert imputed == ["candidate_2"]
+
+
 def test_parse_scores_still_accepts_the_binary_scale():
     """The legacy path must keep its own contract while grade mode exists beside it."""
     assert parse_scores(

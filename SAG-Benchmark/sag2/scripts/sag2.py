@@ -997,7 +997,14 @@ async def search_sag2(
     retained, carried, protected, latest = {}, {}, {}, {}
     expanded, seen = set(), set()
     frontier, trace, baseline = [], [], []
-    usage = {"requests": 0, "judgments": 0, "input_tokens": 0, "output_tokens": 0, "batches": []}
+    usage = {
+        "requests": 0,
+        "judgments": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "imputed_judgments": 0,
+        "batches": [],
+    }
     retrieval_usage = None
 
     def ranked() -> list[dict]:
@@ -1076,6 +1083,9 @@ async def search_sag2(
         latest.update({c["id"]: c for c in scored})
         for key in ("requests", "judgments", "input_tokens", "output_tokens"):
             usage[key] += round_usage[key]
+        # Imputed judgments stay visible at the run level so a reader never has to
+        # rebuild the count by walking every batch.
+        usage["imputed_judgments"] += round_usage.get("imputed_judgments", 0)
         usage["batches"].extend({"hop": hop, **batch} for batch in round_usage["batches"])
         retained = {c["id"]: c for c in scored}
         seen.update(retained)

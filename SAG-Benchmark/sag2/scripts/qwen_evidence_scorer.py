@@ -63,8 +63,16 @@ def _unwrap_keyed_object(
     expected_keys: set[str],
     field: str,
     repairs: list[tuple[str, str]] | None = None,
+    missing: list[str] | None = None,
+    fill_missing: float | None = None,
 ) -> dict:
-    """Decode the model's JSON envelope and align its keys with the candidate ids."""
+    """Decode the model's JSON envelope and align its keys with the candidate ids.
+
+    Qwen occasionally omits a candidate outright (no typo to repair). `fill_missing`
+    decides what happens then: `None` keeps the strict historical behaviour and raises,
+    while a numeric value scores every omitted candidate at that value. Filling is
+    recorded through `missing` so the run states exactly which ids it imputed.
+    """
     if not isinstance(content, str) or not content.strip():
         raise QwenProtocolError("Qwen returned empty content")
     text = content.strip()
@@ -80,14 +88,21 @@ def _unwrap_keyed_object(
         raise QwenProtocolError(f"Qwen response must contain a {field} object")
     if set(scores) != expected_keys:
         scores, applied = repair_deleted_digit_key(scores, expected_keys)
-        if set(scores) != expected_keys:
-            missing = sorted(expected_keys - set(scores))
-            extra = sorted(set(scores) - expected_keys)
-            raise QwenProtocolError(
-                f"Qwen score keys do not match candidates; missing={missing[:5]}, extra={extra[:5]}"
-            )
-        if repairs is not None:
+        if applied and repairs is not None:
             repairs.extend(applied)
+        omitted = sorted(expected_keys - set(scores))
+        unexpected = sorted(set(scores) - expected_keys)
+        # Only a pure omission is imputable: an extra key means the model invented an
+        # id, so the response is untrustworthy rather than merely incomplete.
+        if omitted and not unexpected and fill_missing is not None:
+            if missing is not None:
+                missing.extend(omitted)
+            scores = {**scores, **{key: fill_missing for key in omitted}}
+        if set(scores) != expected_keys:
+            raise QwenProtocolError(
+                f"Qwen score keys do not match candidates; missing={omitted[:5]}, "
+                f"extra={unexpected[:5]}"
+            )
     return scores
 
 
@@ -95,8 +110,12 @@ def parse_scores(
     content: str,
     expected_keys: set[str],
     repairs: list[tuple[str, str]] | None = None,
+    missing: list[str] | None = None,
+    fill_missing: float | None = None,
 ) -> dict[str, float]:
-    scores = _unwrap_keyed_object(content, expected_keys, "scores", repairs)
+    scores = _unwrap_keyed_object(
+        content, expected_keys, "scores", repairs, missing, fill_missing
+    )
     normalized = {}
     for key, value in scores.items():
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
@@ -109,10 +128,14 @@ def parse_grades(
     content: str,
     expected_keys: set[str],
     repairs: list[tuple[str, str]] | None = None,
+    missing: list[str] | None = None,
+    fill_missing: int | None = None,
 ) -> dict[str, int]:
     """Decode grade-mode output, which must use one of the rubric's discrete anchors."""
     allowed = set(GRADE_RUBRIC)
-    grades = _unwrap_keyed_object(content, expected_keys, "grades", repairs)
+    grades = _unwrap_keyed_object(
+        content, expected_keys, "grades", repairs, missing, fill_missing
+    )
     normalized = {}
     for key, value in grades.items():
         if type(value) is not int or value not in allowed:
@@ -136,6 +159,7 @@ class QwenEvidenceScorer:
         concurrency: int = 4,
         response_format: bool = True,
         scoring_scale: str = "binary",
+        fill_missing_score: float | None = None,
         max_output_tokens_per_candidate: int = 0,
         max_candidate_tokens: int = 32_000,
         max_request_tokens: int = 64_000,
@@ -146,6 +170,15 @@ class QwenEvidenceScorer:
             raise ValueError("Qwen scoring scale must be 'binary' or 'grade'")
         if max_output_tokens_per_candidate < 0:
             raise ValueError("Qwen output token budget must not be negative")
+        if fill_missing_score is not None:
+            if scoring_scale == "grade":
+                if type(fill_missing_score) is not int or fill_missing_score not in GRADE_RUBRIC:
+                    raise ValueError(
+                        "fill_missing_score must be a rubric anchor in grade mode, "
+                        f"one of {sorted(GRADE_RUBRIC)}"
+                    )
+            elif not 0 <= fill_missing_score <= 1:
+                raise ValueError("fill_missing_score must lie in [0, 1] in binary mode")
         self.session = session
         self.endpoint = chat_completions_endpoint(base_url)
         self.model = model
@@ -154,6 +187,7 @@ class QwenEvidenceScorer:
         self.concurrency = concurrency
         self.response_format = response_format
         self.scoring_scale = scoring_scale
+        self.fill_missing_score = fill_missing_score
         self.max_output_tokens_per_candidate = max_output_tokens_per_candidate
         self.max_candidate_tokens = max_candidate_tokens
         self.max_request_tokens = max_request_tokens
@@ -317,10 +351,15 @@ class QwenEvidenceScorer:
         except (KeyError, IndexError, TypeError) as error:
             raise QwenProtocolError("Qwen response has no chat completion content") from error
         repairs: list[tuple[str, str]] = []
+        missing: list[str] = []
         scores = (
-            parse_grades(content, expected, repairs)
+            parse_grades(
+                content, expected, repairs, missing, self.fill_missing_score
+            )
             if graded
-            else parse_scores(content, expected, repairs)
+            else parse_scores(
+                content, expected, repairs, missing, self.fill_missing_score
+            )
         )
         usage = token_usage(response)
         return scores, {
@@ -331,6 +370,7 @@ class QwenEvidenceScorer:
             "model": response.get("model") or self.model,
             "latency_ms": elapsed_ms,
             "repaired_keys": [f"{emitted}->{wanted}" for emitted, wanted in repairs],
+            "imputed_keys": missing,
             "max_tokens": output_budget,
         }, attempt
 
@@ -398,6 +438,8 @@ class QwenEvidenceScorer:
             "requests": len(details),
             "judgments": len(candidates),
             "scoring_scale": self.scoring_scale,
+            "fill_missing_score": self.fill_missing_score,
+            "imputed_judgments": sum(len(detail["imputed_keys"]) for detail in details),
             "batches": details,
             "input_tokens": sum(detail["input_tokens"] for detail in details),
             "output_tokens": sum(detail["output_tokens"] for detail in details),

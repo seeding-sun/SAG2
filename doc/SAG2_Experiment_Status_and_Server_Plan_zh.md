@@ -259,6 +259,18 @@ D1：6 档 rubric（0/2/4/6/8/10）+ 阈值 4 + 不填充种子
 
 在飞请求峰值 3，留 5 个槽给其他人。`max_output_tokens_per_candidate` 默认 0（不设上限）以保持历史 payload 逐字节一致，仅本轮显式开启。
 
+#### S3.5.3 首轮崩溃与修复（2026-11-13）
+
+首轮 23:44 启动，00:09 在 11/100 处崩溃：模型对 `2hop__359312_18803` **整条漏判 `candidate_7623`**，`QwenProtocolError` 带走 `TaskGroup`，整轮退出。全量审计显示漏判是模型固有失误（`D1-H1` 2/254，`A1-H1` 1/2081），按 0.5% 估算 100 题必然复现多次；原"重试"因请求日志缓存同一份 HTTP 200 响应而完全无效。
+
+修复后本轮参数追加一项：
+
+```text
+--fill-missing-score 0    纯缺失的候选补 0（grade 模式的刻度锚点）
+```
+
+补全面仅在"只缺不多"时生效，凭空编造 key 仍直接报错；补 0 不会产生种子（0 < 0.4），补全的 id 写入每批的 `imputed_keys` 与 `jev_usage.imputed_judgments`。08:55 重启，靠请求缓存重放已完成部分，不重算算力。详见 `SAG2_Engineering_Incidents_and_Code_Changes_zh.md` §14。
+
 ### 阶段 S4：RRF 改进实验
 
 只有确认 C 优于 B 后再做：
