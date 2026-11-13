@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
-# Full matrix under the chosen judge qwen3.6-27b.
+# Full matrix under qwen3.6-27b.
+# Naming: {A|B|C}{2|6}-H{n}-{model}  (see doc/SAG2_Arm_Naming_zh.md)
 #
-#   retrieval ∈ {bm25, dense, hybrid}  ×  scoring ∈ {binary, grade}
-#
-# Arm layout (output/36b-100/H1/):
-#
-#   A1    BM25   + binary     <- reused from judge-100/A1-36-27B
-#   B1    hybrid + binary
-#   C1    dense  + binary
-#   D1    BM25   + 6-band grade (τ=0.4, no-fill semantics via fill=0)
-#   D1B   hybrid + 6-band grade
-#   D1C   dense  + 6-band grade
-#
-# Each arm is audited; failure stops the chain.
+#   A2-H1-qwen3.6-27b   BM25   + binary   <- reused from judge-100
+#   B2-H1-qwen3.6-27b   hybrid + binary
+#   C2-H1-qwen3.6-27b   dense  + binary
+#   A6-H1-qwen3.6-27b   BM25   + grade
+#   B6-H1-qwen3.6-27b   hybrid + grade
+#   C6-H1-qwen3.6-27b   dense  + grade
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
@@ -21,17 +16,16 @@ OUT=../../output/36b-100/H1
 SAMPLE=../../dataset/musique_100_for_ab.json
 DATASET_DIR=../../dataset
 MODEL=qwen3.6-27b
-ANCHOR=../../output/judge-100/H1/A1-36-27B
+ANCHOR=../../output/judge-100/H1/A2-H1-qwen3.6-27b
 
 mkdir -p "$OUT"
 
-# Reuse the finished BM25+binary arm instead of paying for it twice.
-if [[ ! -e "$OUT/A1" ]]; then
-  ln -s "$(realpath "$ANCHOR")" "$OUT/A1"
-  echo "=== linked A1 -> $ANCHOR ==="
+if [[ ! -e "$OUT/A2-H1-qwen3.6-27b" ]]; then
+  ln -s "$(realpath "$ANCHOR")" "$OUT/A2-H1-qwen3.6-27b"
+  echo "=== linked A2-H1-qwen3.6-27b -> $ANCHOR ==="
 fi
-"$PY" -m scripts.diagnostics.check_model_consistency "$OUT/A1" || {
-  echo "!!! reused A1 failed audit" >&2
+"$PY" -m scripts.diagnostics.check_model_consistency "$OUT/A2-H1-qwen3.6-27b" || {
+  echo "!!! reused A2 failed audit" >&2
   exit 1
 }
 
@@ -69,33 +63,31 @@ run_arm() {
   }
 }
 
-# --- binary row ---
-run_arm B1 --retrieval-mode hybrid \
+run_arm B2-H1-qwen3.6-27b --retrieval-mode hybrid \
   --rrf-k 60 --pool-k 100 --bm25-weight 1.0 --dense-weight 1.0 \
   --scoring-scale binary || exit 1
 
-run_arm C1 --retrieval-mode dense \
+run_arm C2-H1-qwen3.6-27b --retrieval-mode dense \
   --scoring-scale binary || exit 1
 
-# --- grade row ---
-run_arm D1 --retrieval-mode bm25 \
+run_arm A6-H1-qwen3.6-27b --retrieval-mode bm25 \
   --scoring-scale grade --grade-threshold 0.4 \
   --max-output-tokens-per-candidate 32 || exit 1
 
-run_arm D1B --retrieval-mode hybrid \
+run_arm B6-H1-qwen3.6-27b --retrieval-mode hybrid \
   --rrf-k 60 --pool-k 100 --bm25-weight 1.0 --dense-weight 1.0 \
   --scoring-scale grade --grade-threshold 0.4 \
   --max-output-tokens-per-candidate 32 || exit 1
 
-run_arm D1C --retrieval-mode dense \
+run_arm C6-H1-qwen3.6-27b --retrieval-mode dense \
   --scoring-scale grade --grade-threshold 0.4 \
   --max-output-tokens-per-candidate 32 || exit 1
 
-echo "=== $(date '+%F %T') 36b matrix chain complete ==="
-echo
-echo "=== paired vs A1 (BM25+binary @ qwen3.6-27b) ==="
-for arm in B1 C1 D1 D1B D1C; do
+echo "=== $(date '+%F %T') 3.6 matrix chain complete ==="
+BASE=A2-H1-qwen3.6-27b
+echo "=== paired vs $BASE ==="
+for arm in B2-H1-qwen3.6-27b C2-H1-qwen3.6-27b A6-H1-qwen3.6-27b B6-H1-qwen3.6-27b C6-H1-qwen3.6-27b; do
   echo "----- $arm -----"
   "$PY" scripts/diagnostics/compare_arms.py \
-    --baseline "$OUT/A1" --arm "$OUT/$arm"
+    --baseline "$OUT/$BASE" --arm "$OUT/$arm"
 done

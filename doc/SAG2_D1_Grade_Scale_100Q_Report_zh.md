@@ -1,5 +1,7 @@
 # D1 分级评分臂：100 题正式结果
 
+> **命名已更新（2026-11-14）**：臂名格式 `{A|B|C}{2|6}-H{n}-{模型}`，六档用 **6** 不再用 D。对照表见 `SAG2_Arm_Naming_zh.md`。旧文中的 A1/D1/D1B1 等请按该表翻译。
+
 日期：2026-11-13
 实验臂：`D1-H1`（6 档 rubric + 阈值 0.4 + 不填充种子，`batch=10`）
 对照臂：`A1-H1`（BM25 + Qwen 0/1 二值判定，种子补满 10 个）
@@ -28,20 +30,20 @@
 
 > ### ⚠️ 必读二：换到 27B 后，效应量只剩 39% 且不显著
 >
-> 网关弃用 122B 后，在 27B 上重做了匹配基线 `A1-27B`（0.6717）与 `D1-27B`（0.7142）：
+> 网关弃用 122B 后，在 27B 上重做了匹配基线 `A2-H1-qwen3.8-27b`（0.6717）与 `A6-H1-qwen3.8-27b`（0.7142）：
 >
 > | | R@10 | Δ vs 同模型基线 | Holm p |
 > |---|---:|---:|---:|
 > | A1-H1 @122B → D1-H1 | 0.5825 → 0.6925 | **+0.1100** | 0.001 |
-> | A1-27B → D1-27B | 0.6717 → 0.7142 | **+0.0425** | **0.802** |
+> | A2-H1-qwen3.8-27b → A6-H1-qwen3.8-27b | 0.6717 → 0.7142 | **+0.0425** | **0.802** |
 >
-> 绝对水平 `D1-27B`（0.7142）其实高于 `D1-H1`（0.6925），但 27B 基线自身上涨了 8.9pp，**可改进空间被吃掉**。
+> 绝对水平 `A6-H1-qwen3.8-27b`（0.7142）其实高于 `D1-H1`（0.6925），但 27B 基线自身上涨了 8.9pp，**可改进空间被吃掉**。
 >
 > 更关键的是分层结果：**4-hop 的增益从 +5.00pp 塌到 +0.83pp**，几乎归零。直接原因是 27B 判定器更保守，导致 **4-hop 种子从 5.87 掉到 2.47（−58%）**，扩展查询没词可用。
 >
 > 但"补种子"这条补救路径**已被实测否定**：把门坎从 τ=0.4 降到 τ=0.2（纳入 band 2），4-hop 种子从 2.47 升到 3.27（+32%），R@10 反而从 0.5250 降到 0.5167。补进来的候选档位精度只有约 2%，属噪声，污染扩展查询而非提供词项。
 >
-> 混合检索同样无效：`D1B1-27B`（Hybrid RRF）在 27B 上 R@10=0.6933，**低于** `D1-27B` 的 0.7142。
+> 混合检索同样无效：`D1B2-H1-qwen3.8-27b`（Hybrid RRF）在 27B 上 R@10=0.6933，**低于** `A6-H1-qwen3.8-27b` 的 0.7142。
 >
 > **因此 27B 上三条臂（0.6717 / 0.7142 / 0.6933）的差异均不显著。** 本报告 §3–§5 的所有 Δ 数字只在 122B 内部成立，不能外推到 27B。详见 `SAG2_Experiment_Status_and_Server_Plan_zh.md` §0.5。
 
@@ -430,7 +432,7 @@ Pearson r = +0.141。方向与机制假设一致（填充越多受益越大）�
 ## 6. 产物位置
 
 ```text
-output/grade-100/H1/D1-H1/
+output/grade-100/H1/A6-H1-qwen3.5-122b-a10b/
   config.json       # sag2_code_sha256=04661a0a…, qwen_scorer_sha256=70996112…
   metrics.json      # 最终指标 + 成本
   details.jsonl     # 100 题逐题结果（含 trace、grades、usage）
@@ -438,15 +440,15 @@ output/grade-100/H1/D1-H1/
   requests/         # 每题每轮的原始请求/响应缓存
 ```
 
-对照臂：`output/abc-100/H1/A1-H1/`
+对照臂：`output/abc-100/H1/A2-H1-qwen3.5-122b-a10b/`
 
 ### 6.1 27B 复测产物（2026-11-13 追加）
 
 ```text
-output/27b-100/H1/A1-27B/            # 27B 基线（BM25 + 二值 + 填充）       R@10=0.6717
-output/27b-100/H1/D1-27B/            # 27B 多档臂（BM25 + 6 档 + 不填充）    R@10=0.7142
-output/27b-100/H1/D1B1-27B/          # 27B 混合臂（Hybrid RRF + 6 档）       R@10=0.6933
-output/27b-100/H1/D1-27B-t02-4hop/   # τ=0.2 探针（仅 4-hop 30 题）          R@10=0.5167
+output/27b-100/H1/A2-H1-qwen3.8-27b/            # 27B 基线（BM25 + 二值 + 填充）       R@10=0.6717
+output/27b-100/H1/A6-H1-qwen3.8-27b/            # 27B 多档臂（BM25 + 6 档 + 不填充）    R@10=0.7142
+output/27b-100/H1/D1B2-H1-qwen3.8-27b/          # 27B 混合臂（Hybrid RRF + 6 档）       R@10=0.6933
+output/27b-100/H1/A6-H1-qwen3.8-27b.tau02-4hop/   # τ=0.2 探针（仅 4-hop 30 题）          R@10=0.5167
 ```
 
 全部经 `check_model_consistency` 审计，`batches[].model` 100% 为 `qwen3.8-27b`。
@@ -459,7 +461,7 @@ dataset/musique_3hop_for_ab.json   # 30 题
 dataset/musique_4hop_for_ab.json   # 30 题
 ```
 
-`D1B1-27B` 是崩溃后续跑得到的，其 `config.json` 含 `resume_code_changes` 字段，记录了跨代码版本的哈希变更与理由（见工程文档事故 10）。
+`D1B2-H1-qwen3.8-27b` 是崩溃后续跑得到的，其 `config.json` 含 `resume_code_changes` 字段，记录了跨代码版本的哈希变更与理由（见工程文档事故 10）。
 
 ---
 
@@ -475,10 +477,10 @@ cd SAG-Benchmark/sag2
   --evidence-batch-size 10 --concurrency 3 --evidence-concurrency 1 \
   --max-output-tokens-per-candidate 32 --timeout 300 \
   --sample ../../dataset/musique_100_for_ab.json \
-  --output ../../output/grade-100/H1/D1-H1
+  --output ../../output/grade-100/H1/A6-H1-qwen3.5-122b-a10b
 
 # 配对比较（Bootstrap + 符号检验 + Holm + 分层）
 .venv/bin/python scripts/diagnostics/compare_arms.py \
-  --baseline ../../output/abc-100/H1/A1-H1 \
-  --arm ../../output/grade-100/H1/D1-H1
+  --baseline ../../output/abc-100/H1/A2-H1-qwen3.5-122b-a10b \
+  --arm ../../output/grade-100/H1/A6-H1-qwen3.5-122b-a10b
 ```

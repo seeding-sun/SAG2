@@ -770,7 +770,7 @@ Python：项目内 .venv
 | `run_hybrid_compare.py` | `c1471733eee81449` |
 | `qwen_evidence_scorer.py` | `709961128b2b14b8` |
 
-三项均记录在 `output/grade-100/H1/D1-H1/config.json`。
+三项均记录在 `output/grade-100/H1/A6-H1-qwen3.5-122b-a10b/config.json`。
 
 ### 17.4 完整命令行
 
@@ -784,7 +784,7 @@ cd SAG-Benchmark/sag2
   --concurrency 3 --evidence-concurrency 1 \
   --max-output-tokens-per-candidate 32 --timeout 300 \
   --sample ../../dataset/musique_100_for_ab.json \
-  --output ../../output/grade-100/H1/D1-H1
+  --output ../../output/grade-100/H1/A6-H1-qwen3.5-122b-a10b
 ```
 
 ### 17.5 实测运行特征
@@ -896,7 +896,7 @@ D1-H1: {'qwen3.5-122b-a10b': 1834, 'qwen3.8-27b': 260}  # 混入 12.42%
 
 ### 20.1 事实
 
-`D1B1-27B` 跑到 **39/100** 时整个 TaskGroup 崩掉：
+`D1B2-H1-qwen3.8-27b` 跑到 **39/100** 时整个 TaskGroup 崩掉：
 
 ```text
 qwen_evidence_scorer.QwenProtocolError: Qwen score protocol failed after retry:
@@ -916,7 +916,7 @@ Qwen score keys do not match candidates; missing=['candidate_11486'], extra=['ca
 **B. 编排层：链脚本不看返回码**
 
 ```bash
-run_arm D1B1-27B ...     # 返回值被丢弃
+run_arm D1B2-H1-qwen3.8-27b ...     # 返回值被丢弃
 echo "=== chain complete ==="
 ```
 
@@ -927,7 +927,7 @@ echo "=== chain complete ==="
 修好 scorer 后，`config.json` 里的 `qwen_scorer_sha256` 与当前文件不一致，`--resume` 直接拒绝：
 
 ```text
-ValueError: Resume configuration differs from .../D1B1-27B/config.json
+ValueError: Resume configuration differs from .../D1B2-H1-qwen3.8-27b/config.json
 ```
 
 守卫本身是对的（防止在语义变更后拼接两个不同实现的结果），但当时**没有任何合法的越权通道**，导致"崩溃 → 修复 → 无法续跑 → 只能重跑 100 题"。
@@ -993,7 +993,7 @@ cd /data/machine_learning/cmh/知识库/SAG2/SAG-Benchmark/sag2
 .venv/bin/python -m ruff check scripts tests
 
 # 模型一致性守卫（必须做：网关会静默换模型，见 §19）
-.venv/bin/python -m scripts.diagnostics.check_model_consistency ../../output/grade-100/H1/D1-H1
+.venv/bin/python -m scripts.diagnostics.check_model_consistency ../../output/grade-100/H1/A6-H1-qwen3.5-122b-a10b
 # 污染时退出码 1，并输出干净子集指标；干净时退出码 0
 
 # 批量审计所有 run
