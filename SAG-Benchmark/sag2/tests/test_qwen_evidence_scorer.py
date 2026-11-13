@@ -508,3 +508,18 @@ def test_a_response_without_a_model_field_is_trusted(tmp_path):
     )
     assert scorer.model_mismatches == []
     assert usage["batches"][0]["model"] == "qwen-test"
+
+
+def test_imputation_drops_an_extra_key_when_nothing_is_missing():
+    """Gemma emitted every expected key plus one stranger; keep the trusted scores."""
+    dropped: list[str] = []
+    scores = parse_scores(
+        '{"scores":{"candidate_1":1.0,"candidate_2":0.0,"candidate_10990":1.0}}',
+        {"candidate_1", "candidate_2"},
+        None,
+        None,
+        0.0,
+        dropped,
+    )
+    assert scores == {"candidate_1": 1.0, "candidate_2": 0.0}
+    assert dropped == ["candidate_10990"]

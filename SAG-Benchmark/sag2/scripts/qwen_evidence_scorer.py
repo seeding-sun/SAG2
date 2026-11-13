@@ -138,9 +138,11 @@ def _unwrap_keyed_object(
         unexpected = sorted(set(scores) - expected_keys)
         # A pure omission is imputable.  An unexpected key can never be trusted as a
         # grade, but aborting a long run over a mistyped id costs an entire arm, so in
-        # imputation mode the invented key is dropped and the omitted candidates are
+        # imputation mode the invented key is dropped and any omitted candidates are
         # imputed.  Both decisions are recorded, so the run stays auditable.
-        if fill_missing is not None and omitted:
+        # The extra-only case (every expected key present, plus a stray) is the same
+        # class of fault: drop the stray and keep the trusted scores.
+        if fill_missing is not None and (omitted or unexpected):
             # A single stray id is a typo; a large share of stray ids means the model
             # answered a different batch entirely.  Refuse that instead of quietly
             # imputing most of the round at the floor value.
@@ -149,12 +151,13 @@ def _unwrap_keyed_object(
                     f"Qwen returned {len(unexpected)} keys outside this batch "
                     f"({unexpected[:5]}); refusing to impute wholesale"
                 )
-            if missing is not None:
+            if omitted and missing is not None:
                 missing.extend(omitted)
-            if dropped is not None:
+            if unexpected and dropped is not None:
                 dropped.extend(unexpected)
             scores = {k: v for k, v in scores.items() if k in expected_keys}
-            scores.update({key: fill_missing for key in omitted})
+            if omitted:
+                scores.update({key: fill_missing for key in omitted})
         if set(scores) != expected_keys:
             raise QwenProtocolError(
                 f"Qwen score keys do not match candidates; missing={omitted[:5]}, "
