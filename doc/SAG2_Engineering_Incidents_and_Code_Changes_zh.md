@@ -22,6 +22,9 @@
 | 8 | 代码改动未提交 git | 待办 | 中 | 待你决定 |
 | 9 | 只读诊断时实例化 `CorpusIndex` 把 BM25 索引清空 | 故障 | **高（可毁数据）** | 已重建 + 已逐位校验 |
 | 10 | kill 错进程 + 请求未设 `max_tokens` 把 122B 实例打瘫 40 分钟 | 故障 | **高（中断他人服务）** | 已定位根因 + 已加输出上限 |
+| 11 | Qwen 整条漏判一个候选，`D1-H1` 跑 11 题后整轮崩溃 | 故障 | **高（中断实验）** | 已修复（缺键补 0） |
+| 12 | 统计脚本用截断文本反查 doc id，导致"池内/池外"拆分失真 | 数据错误 | **高（会误导决策）** | 已改用干净 id 字段并自校验 |
+| 13 | `D1-H1` 全程零重试但墙钟慢 3.2 倍 | 配置取舍 | 低（非方法开销） | 已定性，本轮起恢复并发 |
 
 ---
 
@@ -654,7 +657,153 @@ Qwen score keys do not match candidates; missing=['candidate_7623'], extra=[]
 
 ---
 
-## 15. 校验命令
+## 15. 事故 7（诊断侧）：用截断文本反查 doc id，把"池内/池外"拆分算错
+
+### 15.1 现象
+
+在拆解"第一轮漏掉的 gold 最终去哪了"时，第一版脚本用 `initial_docs`（chunk **文本**）做反查：
+
+```python
+t2i = {}   # full_doc 文本 -> document_id
+for did, full in db.execute("select document_id, full_doc from chunks"):
+    t2i.setdefault(full, did)
+i10 = set(t2i[d] for d in row['initial_docs'][:10])
+```
+
+它一度给出"扩展轮平均新增 97.9 个候选"，与 `hop-1` 池子平均只有 106.3 条自相矛盾——新增 98 条意味着第一轮只留下 8 条，与"5 个 BM25 保护项 + 种子"的机制不符。
+
+### 15.2 根因
+
+`initial_docs` 存的是**落库时的 chunk 文本**，而 `chunks.full_doc` 是原始段落。两者在长段落上因 `chunk_chars=2200` 截断而不相等，`t2i.get()` 大量返回 `None`，再被列表推导静默丢弃。
+
+**最危险的地方是它不报错**：丢几条不会抛异常，只是让分母变小、比例失真。抽查 3 题时 `docs映射` 显示 10/10，掩盖了这个问题（短段落能对上）。
+
+### 15.3 修复：改用干净 id 字段，并强制自校验
+
+`details.jsonl` 里本来就有现成的 id 字段，不需要反查：
+
+| 用途 | 正确字段 |
+|---|---|
+| 第一轮 100 候选 | `initial_candidate_ids` |
+| 第一轮 top-10 | `initial_candidate_ids[:10]` |
+| hop-1 池 | `trace` 中 `stage="jev", hop=1` 的 `scores[].id` |
+| 最终 top-10 | `retrieved_source_ids`（注意：与 `retrieved_docs` 的顺序**不一致**，不可混用） |
+
+改完后两个自校验全部通过：
+
+```text
+A1 自校验: final R@10 不符 0/100, initial R@10 不符 0/100
+D1 自校验: final R@10 不符 0/100, initial R@10 不符 0/100
+两臂 initial_candidate_ids 逐题相同: 100/100
+```
+
+其中"两臂 `initial_candidate_ids` 逐题相同"本身就是一个强证据：两臂的第一轮是**同一份结果**，所以后续差异只能来自扩展轮。
+
+### 15.4 教训
+
+凡是"从文本反查 id"的统计脚本，都必须带一条**重算指标与 `metrics.json` 对账**的自校验，且误差阈值设到 `1e-9`，不通过就不许出数。文本映射这类静默丢数据的路径，抽查几题是发现不了的。
+
+---
+
+## 16. 事故 8（配置）：`D1-H1` 全程零重试，但墙钟慢 3.2 倍
+
+### 16.1 事实
+
+| | A1-H1 | D1-H1 |
+|---|---|---|
+| 单题计算量 `mean_query_ms` | 237,080 | 241,882（+2.0%） |
+| 墙钟 | 2,088 s | 6,672 s（3.2×） |
+| `--concurrency`（题级） | 12 | 3 |
+| 重试次数 | — | **0** |
+
+### 16.2 定性
+
+这不是方法开销，是**为共享实例主动让路**：122B 是多人共用的，空载时 GPU 利用率仍 76–90%，容器只有 8 个序列槽。当时把题级并发压到 3，在飞请求峰值 3，留 5 个槽给别人。
+
+代价：100 题从 ~35 分钟变成 ~111 分钟。收益：全程零超时、零重试、零崩溃（对比同期 `batch=100` 臂四次 300s 超时并把实例打瘫）。
+
+### 16.3 决定
+
+单题计算量已证明与 A1 相同（+2.0%），说明 `--concurrency 3` 只是排队、没有额外开销。后续实验把并发恢复到中间档（`--concurrency 6`）：在飞峰值 6，仍留 2 个槽，墙钟约减半。
+
+### 16.4 汇报纪律
+
+**不同并发的两个臂不能比墙钟。** 唯一可比口径是 `mean_query_ms`（单题计算量）与 token 数。任何"本轮比上轮快/慢"的表述都必须注明并发配置。
+
+---
+
+## 17. 环境与运行参数（`D1-H1` 100 题，2026-11-13）
+
+这一节记录复现所需的完整环境，便于后续实验逐项对照。
+
+### 17.1 主机与服务
+
+```text
+主机：Linux 6.8.0-138-generic（共享 GPU 服务器）
+工作目录：/data/machine_learning/cmh/知识库/SAG2
+SAG2 代码：SAG-Benchmark/sag2
+Python：项目内 .venv
+```
+
+| 服务 | 地址 | 说明 |
+|---|---|---|
+| Qwen 证据判定 | `qwen3.5-122b-a10b` | 共享 122B 实例，容器 `--max-num-seqs 8` |
+| Embedding | `bge-m3:latest`，1024 维 | 仅向量/混合臂需要，本轮 BM25 未用 |
+| BM25 索引 | `.cache/sag2/musique.sqlite` | 11,656 段落 / 11,656 片段 |
+
+### 17.2 数据
+
+| | |
+|---|---|
+| 样本 | `dataset/musique_100_for_ab.json`，100 题（2hop 40 / 3hop 30 / 4hop 30） |
+| `sample_sha256` | `971109fac5d9ea1947f95b66682f61b02277391d67aec7e666ad529f5a23d93d` |
+| 语料 | MuSiQue 11,656 段落，`corpus_sha256` = `73157a03…` |
+
+每题 gold 段落数 **2–4 个（均值 2.90，合计 290）**，不是 10 个。
+
+### 17.3 代码版本（可追溯）
+
+| 文件 | SHA256 前 16 位 |
+|---|---|
+| `sag2.py` | `04661a0a7cd708ef` |
+| `run_hybrid_compare.py` | `c1471733eee81449` |
+| `qwen_evidence_scorer.py` | `709961128b2b14b8` |
+
+三项均记录在 `output/grade-100/H1/D1-H1/config.json`。
+
+### 17.4 完整命令行
+
+```bash
+cd SAG-Benchmark/sag2
+.venv/bin/python scripts/run_hybrid_compare.py \
+  --arm D1-H1 \
+  --scoring-scale grade --grade-threshold 0.4 --fill-missing-score 0 \
+  --candidate-k 100 --seed-k 10 --max-hops 1 --top-k 10 \
+  --evidence-batch-size 10 \
+  --concurrency 3 --evidence-concurrency 1 \
+  --max-output-tokens-per-candidate 32 --timeout 300 \
+  --sample ../../dataset/musique_100_for_ab.json \
+  --output ../../output/grade-100/H1/D1-H1
+```
+
+### 17.5 实测运行特征
+
+| 指标 | 值 |
+|---|---|
+| 墙钟 | 6,671.6 s（约 1 小时 51 分） |
+| 判定次数 | 20,520 |
+| 请求数 | 2,094 |
+| 输入 / 输出 token | 6,489,275 / 243,714 |
+| 每批输出 token | 均值 116.4，最大 148（上限 576 从未逼近） |
+| 每批延迟 | 中位 11.4 s，p99 33.7 s，最大 50.2 s |
+| 超时 | 0 |
+| 重试 | 0 |
+| 补全判定 | 2（0.010%） |
+| 早停题 | 1（`2hop__359312_18803`，`eligible_count=0`） |
+
+---
+
+## 18. 校验命令
 
 ```bash
 cd /data/machine_learning/cmh/知识库/SAG2/SAG-Benchmark/sag2
