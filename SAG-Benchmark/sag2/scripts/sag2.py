@@ -1054,10 +1054,12 @@ async def search_sag2(
             baseline = candidates
             protected = {c["id"]: c for c in candidates[:5]}
         carried.update({c["id"]: c for c in frontier})
+        # Each hop's evidence context changes. Re-judge the full accumulated
+        # history together with this round's new retrieval; the old pool
+        # (protected + seeds + new only) left hop-0 zeros frozen without the
+        # bridging passages that only appear in later evidence.
         pool = (
-            list(
-                {c["id"]: c for c in [*protected.values(), *carried.values(), *candidates]}.values()
-            )
+            list({c["id"]: c for c in [*latest.values(), *candidates]}.values())
             if hop
             else candidates
         )
@@ -1068,15 +1070,21 @@ async def search_sag2(
         )
         previous_eligible_count = 0
         if hop == 2:
-            carried_candidates = [c for c in pool if c["id"] in latest]
-            incoming = [c for c in pool if c["id"] not in latest][:20]
+            incoming = [c for c in candidates if c["id"] not in latest][:20]
             previous = sorted(
                 (c for c in latest.values() if c["jev_score"] >= grade_threshold),
                 key=lambda c: (-c["jev_score"], -c["fusion_score"], c["id"]),
             )
             previous_eligible_count = len(previous)
-            history = list({c["id"]: c for c in [*carried_candidates, *previous]}.values())
-            pool = history[: len(pool) - len(incoming)] + incoming
+            # Re-score the entire accumulated history under hop-2 evidence;
+            # only the brand-new retrieval is capped at 20. grade_threshold
+            # still gates frontier seeds and is reported via
+            # previous_eligible_count.
+            history = sorted(
+                latest.values(),
+                key=lambda c: (-c["jev_score"], -c["fusion_score"], c["id"]),
+            )
+            pool = history + incoming
             evidence = [{**c, "previous_jev_score": c["jev_score"]} for c in ranked()[:10]]
         score_options = {"context": context} if context is not None else {}
         scored, round_usage = await client.score(query, pool, evidence, **score_options)

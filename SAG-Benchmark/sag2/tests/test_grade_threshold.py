@@ -170,6 +170,28 @@ def test_eligible_count_matches_the_scored_pool_when_everything_passes(tmp_path)
     assert len(seed_ids(result)) == 10
 
 
+def test_hop_one_rescores_the_full_hop_zero_history(tmp_path):
+    """Context changes at hop 1; every hop-0 judgement must be re-opened."""
+    index = make_deep_index(tmp_path)
+    scorer = RankScorer({})
+    result = asyncio.run(
+        sag2.search_sag2(
+            index,
+            scorer,
+            "anchor",
+            candidate_k=10,
+            seed_k=2,
+            max_hops=1,
+        )
+    )
+    steps = [step for step in result["trace"] if step["stage"] == "jev"]
+    assert len(steps) == 2 and len(scorer.pools) == 2
+    hop0_ids = set(scorer.pools[0])
+    hop1_ids = set(scorer.pools[1])
+    assert hop0_ids <= hop1_ids, "hop 1 must re-score the entire hop-0 pool under new evidence"
+    assert len(hop1_ids) > len(hop0_ids), "hop 1 must also score the newly retrieved candidates"
+
+
 def test_hop_two_previous_candidates_respect_the_threshold(tmp_path):
     """hop-2 used to backfill 80 slots from ranks that were all 0.0."""
     index = make_deep_index(tmp_path)
@@ -192,7 +214,9 @@ def test_hop_two_previous_candidates_respect_the_threshold(tmp_path):
     hop_two = steps[-1]
     assert hop_two["hop"] == 2, "hop 2 must actually run for this assertion to mean anything"
 
-    # `latest` holds every judgement so far; only the qualifying ones may resurface.
+    # `latest` holds every judgement so far; previous_eligible_count still
+    # reports how many clear the seed threshold (frontier gating), even though
+    # hop-2 re-scores a score-ranked history budget that may include zeros.
     seen = {entry["id"] for step in steps[:2] for entry in step["scores"]}
     expected = sum(1 for document_id in seen if qualifies(document_id))
     assert hop_two["previous_eligible_count"] == expected

@@ -981,12 +981,42 @@ test_imputation_refuses_wholesale_key_corruption
 
 ---
 
+## 22. 每跳历史全量重打（2026-11-14）
+
+### 22.1 问题
+
+论文/设计意图是上下文变了就要重判。实现却是：
+
+| 轮次 | 实际打分池 | 后果 |
+|---|---|---|
+| hop0 | 初次 100，**evidence=[]** | 桥接 gold 常被打 0（「不同实体」） |
+| hop1 | 仅 protected + 种子 + 新召回（~110） | hop0 里约 90 篇**不重打**，0 分冻住 |
+| hop2 | 旧池几乎只要 `score≥τ` + 新 20 | 六档下 leftover gold（全是 0/2）进不了重打池 |
+
+实测（A6 leftover-gold-grade0）：约 **43/68** 首次打 0 发生在 hop0 且 evidence 为空；二值 hop0→hop1 重叠约 10/100，六档约 7/100。
+
+### 22.2 改动
+
+`scripts/sag2.py` / `search_sag2`：
+
+1. hop≥1：`pool = latest ∪ candidates`（全历史 + 本轮新召回）。
+2. hop2：`pool = sorted(latest) + incoming[:20]`；τ 仍只用于 frontier / `previous_eligible_count`。
+3. 测试：`test_hop_one_rescores_the_full_hop_zero_history`；更新 `sag2_reference.json`（oracle 判定量上升，排序仍由 evidence 依赖的 Bridge/Multiple 规则决定）。
+
+### 22.3 影响
+
+- **判定量上升**：hop1 ≈200/题，hop2 ≈|latest|+≤20。
+- **指纹**：`sag2_code_sha256` 变化；旧 `output/27b-100/H1/*` 与新代码不可混比、不可用旧 request cache 续跑 hop≥1。
+- 单元测试：`pytest -q` → **144 passed**。
+
+---
+
 ## 21. 校验命令
 
 ```bash
 cd /data/machine_learning/cmh/知识库/SAG2/SAG-Benchmark/sag2
 
-# 单元测试（应 142 passed）
+# 单元测试（应 144 passed）
 .venv/bin/python -m pytest -q
 
 # 静态检查
