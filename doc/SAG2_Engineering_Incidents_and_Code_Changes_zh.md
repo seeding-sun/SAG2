@@ -1011,12 +1011,19 @@ test_imputation_refuses_wholesale_key_corruption
 
 ### 22.4 smoke10 冒烟（2026-11-14）
 
-```text
-output/smoke10-rescore/A6-H2-qwen3.8-27b/   R@10=0.7833  judgments=4760  ~10min
-output/smoke10-rescore/A2-H2-qwen3.8-27b/   R@10=0.7250  judgments=5200  ~11min
-```
+| | A6-H2（六档） | A2-H2（二值） |
+|---|---:|---:|
+| 输出 | `output/smoke10-rescore/A6-H2-qwen3.8-27b/` | `…/A2-H2-qwen3.8-27b/` |
+| R@10（新） | **0.7833** | 0.7250 |
+| 同 10 题旧矩阵 H2 | 0.6500 | 0.7000 |
+| Δ | **+13.3pp** | +2.5pp |
+| judgments | 4760 | 5200 |
+| 墙钟 | 592s | 679s |
+| hop0⊆hop1 / hop1 池 | 1.0 / 200 | 1.0 / 200 |
+| `sag2_code_sha256` | `74610b95a7b21e42…` | 同左 |
+| 模型审计 | 100% `qwen3.8-27b` | 同左 |
 
-同 10 题相对旧矩阵 H2：A6 0.6500→0.7833，A2 0.7000→0.7250。两臂 `hop0⊆hop1=1.0`、`hop1_pool≈200`，确认全历史重打生效；`check_model_consistency` 均为 100% `qwen3.8-27b`。
+结论：机制正确；六档在小样本上受益更大。下一步见现状文档 §0.11（先重跑 A6/A2 × H1/H2 100 题，新目录隔离，禁止复用旧 hop≥1 cache）。
 
 ---
 
