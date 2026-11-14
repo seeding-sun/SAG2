@@ -1009,6 +1009,15 @@ test_imputation_refuses_wholesale_key_corruption
 - **指纹**：`sag2_code_sha256` 变化；旧 `output/27b-100/H1/*` 与新代码不可混比、不可用旧 request cache 续跑 hop≥1。
 - 单元测试：`pytest -q` → **144 passed**。
 
+### 22.4 smoke10 冒烟（2026-11-14）
+
+```text
+output/smoke10-rescore/A6-H2-qwen3.8-27b/   R@10=0.7833  judgments=4760  ~10min
+output/smoke10-rescore/A2-H2-qwen3.8-27b/   R@10=0.7250  judgments=5200  ~11min
+```
+
+同 10 题相对旧矩阵 H2：A6 0.6500→0.7833，A2 0.7000→0.7250。两臂 `hop0⊆hop1=1.0`、`hop1_pool≈200`，确认全历史重打生效；`check_model_consistency` 均为 100% `qwen3.8-27b`。
+
 ---
 
 ## 21. 校验命令
