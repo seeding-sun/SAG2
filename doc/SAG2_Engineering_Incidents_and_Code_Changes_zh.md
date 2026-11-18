@@ -1025,6 +1025,22 @@ test_imputation_refuses_wholesale_key_corruption
 
 结论：机制正确；六档在小样本上受益更大。下一步见现状文档 §0.11（先重跑 A6/A2 × H1/H2 100 题，新目录隔离，禁止复用旧 hop≥1 cache）。
 
+### 22.5 100 题 A6/A2 重打 + 判定探测（2026-11-14～15）
+
+完整数字与探测表见专报 `SAG2_Rescore_and_Judge_Probe_Report_zh.md`。要点：
+
+1. `output/27b-100/H1-rescore/`：A6-H2 R@10=**0.7783**，相对同目录 A2-H1 +6.0pp（Holm p=0.024）；相对旧矩阵同臂 A6-H2 +7.0pp。
+2. 二值 H2 不再靠旧池「盲猜」拉开差距（A2-H2 0.7117 ≤ A2-H1 0.7183）。
+3. `probe_grade_criterion_ab.py`：27B 上放宽 criterion 无效；DeepSeek 小样本桥接 7/10≥4 → 优先考虑换判定器而非改文案。
+4. 提交链：`845e354`（代码）→ `e8aa902`（启动 100Q chain）；专报与 §0.11 补记结果。
+
+### 22.6 BC 重打 + 池内外漏斗（2026-11-15）
+
+1. `run_38b_rescore_bc_chain.sh` 跑完：最强 **C6-H2 R@10=0.7892**；六档 Dense≥Hybrid≥BM25；二值 H2 掉点。
+2. 290 gold 命运：池外 C17/B25/A30；池内未进 top10 **C52/B45/A44**。C 的 52 大是「多捞难例仍判 0」的记账效应，不是排序更差。
+3. 诊断脚本/产物：`scripts/diagnostics/analyze_never_recalled.py`；`output/27b-100/H1-rescore/diagnostics/`。
+4. 专报 §8–§10；现状 §0.11 已更新。换 2Wiki/Hotpot 前需补数据集文件。
+
 ---
 
 ## 21. 校验命令

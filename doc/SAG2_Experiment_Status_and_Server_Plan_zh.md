@@ -383,7 +383,49 @@
 2. 若 A6 相对 A2 在 100 题上站得住，再补 `B6/B2`、`C6/C2` 的 H1/H2，形成新一版 3.8 矩阵（目录建议 `output/27b-100/H1-rescore/`，与旧矩阵隔离）。  
 3. 旧 18 格矩阵保留作「重打前基线」，报告中明确代码版本分界（本改动提交 `845e354`）。
 
-**已启动（2026-11-14 17:52）**：`scripts/run_38b_rescore_ab_chain.sh` → `output/27b-100/H1-rescore/`，日志 `chain.log`。顺序 A6-H1 → A2-H1 → A6-H2 → A2-H2；H2 仅从同目录 H1 续 cache，不用旧矩阵。
+**已启动（2026-11-14 17:52）**：`scripts/run_38b_rescore_ab_chain.sh` → `output/27b-100/H1-rescore/`，日志 `chain.log`。顺序 A6-H1 → A2-H1 → A6-H2 → A2-H2；H2 仅从同目录 H1 续 cache，不用旧矩阵。另补 H0：`h0_chain.log`。
+
+**100 题已完成（专报 `SAG2_Rescore_and_Judge_Probe_Report_zh.md`）**
+
+| 臂 | H0 | H1 | H2 |
+|---|---:|---:|---:|
+| A2 二值 | 0.6017 | 0.7183 | 0.7117 |
+| A6 六档 | 0.6008 | 0.7617 | **0.7783** |
+
+- A6-H2 − A2-H1：**+6.0pp**（Holm p=0.024）。六档重新压过二值；二值 H2 相对 H1 无增益。
+- 相对旧矩阵同臂：A6-H2 +7.0pp，A6-H1 +4.8pp；H0 不变。
+- B/C 已在同代码下重跑完成（见下）。
+
+**判定器探测（同专报 §5）**
+
+- criterion A/B @ `qwen3.8-27b`：桥接 ≥4 几乎不抬（4/30 vs 3/30），改 prompt 无效。
+- 同批桥接 @ DeepSeek 云 API：≥4 = **7/10**（对照仍 0）→ 更像模型能力问题。
+- 本机部署 JEV/大判定：盘够、GPU 满，暂不可行。
+
+**BC 重打链已完成（2026-11-15）**：`bc_chain.log`。R@10：
+
+| | H1 | H2 |
+|---|---:|---:|
+| A6 | 0.7617 | 0.7783 |
+| B6 | 0.7708 | 0.7842 |
+| **C6** | 0.7783 | **0.7892** |
+| A2 | 0.7183 | 0.7117 |
+| B2 | 0.7633 | 0.7300 |
+| C2 | 0.7508 | 0.7117 |
+
+段落命运（290 gold，H2）：池外漏 C17 / B25 / A30；**池内未进 top10 C52 / B45 / A44**（C 的 52 大，是因为多捞进难例仍 grade 0，净 top10 只 +1）。  
+**结论：主瓶颈仍是池内判 0，不是检索。** 专报已扩写 §8–§10：`SAG2_Rescore_and_Judge_Probe_Report_zh.md`。
+
+**跨数据集**：2Wiki / Hotpot 已下载。预案 **`SAG2_CrossDataset_Experiment_Plan_zh.md`**。  
+**2Wiki H1 已完成（2026-11-15）**：A6 R@10=**0.985** / C6 0.9825 / A2 0.975。  
+漏斗：池内漏 **0**；剩余误差全是池外（A6 仅 4 条）。专报 `SAG2_2Wiki_H1_100Q_Report_zh.md`。  
+
+**Hotpot H1 已完成（2026-11-16）**：A6/C6 R@10=**0.985**，A2 0.955。漏斗（200 gold）：A6 池外 1 + 池内漏 2；近饱和，像 2Wiki 不像 MuSiQue。专报 `SAG2_Hotpot_H1_100Q_Report_zh.md`。  
+
+**总复盘（2026-11-16）**：`SAG2_MuSiQue_Two_Bottlenecks_and_CrossDataset_zh.md`——MuSiQue 两条线「召不回 / 池里捞不到」贯穿 H0→H2；Dense 减 never、加 miss；2Wiki/Hotpot 几乎无池内判 0。
+
+**本地 deepseek / 十档（2026-11-16）**：量化 `deepseek-v4-flash` 探针能抬池内桥接欠分，但 C6-H1 smoke/n30 **R@10 低于 27B**（高分段不纯→乱扩）；细档与抬 τ 均未翻盘。27B n30 上 **六档 0.756 > 十档 0.733**。专报 §5.5：`SAG2_Rescore_and_Judge_Probe_Report_zh.md`。产物 `output/smoke10-judge-ds/`。  
+**never / dual / gated（2026-11-16）**：MQ 0.417；无闸门 dual **0.477**；§5.8 gated **0.432**（+1.5pp，更稳但未追上无闸门）。总部消歧仍是开放项。`GATE_gated.md`。
 
 ### 0.8 矩阵启动受阻：`qwen3.6-27b` 被静默替换（2026-11-13 21:45）
 

@@ -99,6 +99,29 @@ def repair_deleted_digit_key(
     return repaired, [(emitted, wanted)]
 
 
+def repair_missing_candidate_prefix(
+    scores: dict, expected_keys: set[str]
+) -> tuple[dict, list[tuple[str, str]]]:
+    """Map bare numeric ids to ``candidate_<id>`` when that key is expected.
+
+    Local DeepSeek occasionally drops the ``candidate_`` prefix and returns only the
+    integer id. Remap only when the prefixed form is expected and not already present,
+    so a true collision cannot silently overwrite a trusted score.
+    """
+    applied: list[tuple[str, str]] = []
+    out = dict(scores)
+    for key, value in list(scores.items()):
+        text = str(key)
+        if text.startswith("candidate_") or not text.isdigit():
+            continue
+        wanted = f"candidate_{text}"
+        if wanted in expected_keys and wanted not in out:
+            out.pop(key, None)
+            out[wanted] = value
+            applied.append((text, wanted))
+    return out, applied
+
+
 def _unwrap_keyed_object(
     content: str,
     expected_keys: set[str],
@@ -131,6 +154,9 @@ def _unwrap_keyed_object(
     if not isinstance(scores, dict):
         raise QwenProtocolError(f"Qwen response must contain a {field} object")
     if set(scores) != expected_keys:
+        scores, applied_prefix = repair_missing_candidate_prefix(scores, expected_keys)
+        if applied_prefix and repairs is not None:
+            repairs.extend(applied_prefix)
         scores, applied = repair_deleted_digit_key(scores, expected_keys)
         if applied and repairs is not None:
             repairs.extend(applied)
@@ -396,6 +422,11 @@ class QwenEvidenceScorer:
             ],
             "temperature": 0,
         }
+        # Local quantized DeepSeek burns the output budget on hidden reasoning unless
+        # thinking is disabled; keep this model-specific so Qwen runs stay unchanged.
+        if "deepseek" in self.model.lower():
+            payload["reasoning_effort"] = "none"
+            payload["thinking"] = False
         # Without an output cap a single degenerate generation can run to the server's
         # max-model-len (262144 here), which blocks a slot for hours and looks like a
         # wedged server. Each candidate needs one id plus one small integer, so a
@@ -429,9 +460,14 @@ class QwenEvidenceScorer:
                     "model explicitly with --evidence-model."
                 )
         try:
-            content = response["choices"][0]["message"]["content"]
+            message = response["choices"][0]["message"]
+            content = message.get("content") or ""
+            if not str(content).strip():
+                content = message.get("reasoning_content") or ""
         except (KeyError, IndexError, TypeError) as error:
             raise QwenProtocolError("Qwen response has no chat completion content") from error
+        if not isinstance(content, str) or not content.strip():
+            raise QwenProtocolError("Qwen returned empty content")
         repairs: list[tuple[str, str]] = []
         missing: list[str] = []
         dropped: list[str] = []

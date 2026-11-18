@@ -990,6 +990,10 @@ async def search_sag2(
     grade_threshold: float = 0.0,
     context: dict | None = None,
     initial_retriever: InitialRetriever | None = None,
+    followup_rewriter: object | None = None,
+    followup_vector: object | None = None,
+    followup_per_query_k: int = 80,
+    hop_planner: object | None = None,
 ) -> dict:
     if not 0 <= max_hops <= 2:
         raise ValueError("SAG2 supports at most two expansion rounds")
@@ -1013,7 +1017,11 @@ async def search_sag2(
         )
 
     expression = index.match_query(query)
+    if hop_planner is not None:
+        await hop_planner.ensure_decomposed(query)
     for hop in range(max_hops + 1):
+        if hop_planner is not None:
+            hop_planner.set_hop(hop)
         if hop == 0 and initial_retriever is not None:
             hits, retrieval_usage = await initial_retriever.search(
                 index, query, excluded=seen, limit=candidate_k
@@ -1030,6 +1038,66 @@ async def search_sag2(
                 if hop
                 else (index.retrieve(expression, seen, candidate_k), [])
             )
+            # Optional evidence-conditioned dense follow-up queries (never-recall path).
+            if (
+                hop
+                and followup_rewriter is not None
+                and followup_vector is not None
+                and frontier
+            ):
+                from multi_query_retriever import dense_search_queries
+
+                seed_passages = [
+                    {
+                        "title": c.get("title") or "",
+                        "content": (c.get("content") or "")[:400],
+                    }
+                    for c in frontier[:seed_k]
+                ]
+                follow_qs = await followup_rewriter.followup_queries(query, seed_passages)
+                dense_hits = await dense_search_queries(
+                    followup_vector,
+                    index,
+                    follow_qs,
+                    excluded=seen,
+                    per_query_k=followup_per_query_k,
+                    limit=candidate_k,
+                )
+                # Prefer documents seen by either BM25 expansion or dense follow-ups.
+                merged: dict[int, dict] = {}
+                for rank, hit in enumerate(hits, start=1):
+                    row = dict(hit)
+                    row["_bm25_rank"] = rank
+                    merged[int(hit["id"])] = row
+                for rank, hit in enumerate(dense_hits, start=1):
+                    cid = int(hit["id"])
+                    if cid in merged:
+                        merged[cid]["_dense_rank"] = rank
+                    else:
+                        row = dict(hit)
+                        row["_dense_rank"] = rank
+                        merged[cid] = row
+                fused = []
+                for cid, row in merged.items():
+                    bm25_rank = row.get("_bm25_rank")
+                    dense_rank = row.get("_dense_rank")
+                    score = 0.0
+                    if bm25_rank is not None:
+                        score += 1.0 / (60 + bm25_rank)
+                    if dense_rank is not None:
+                        score += 1.0 / (60 + dense_rank)
+                    row = {
+                        k: v
+                        for k, v in row.items()
+                        if k not in {"_bm25_rank", "_dense_rank"}
+                    }
+                    row["score"] = score
+                    fused.append(row)
+                fused.sort(key=lambda r: (-r["score"], r["id"]))
+                hits = fused[:candidate_k]
+                queries = list(queries) + [
+                    {"ranking_expression": q, "source": "dense_followup"} for q in follow_qs
+                ]
         candidates = [
             {**hit, "hop": hop, "fusion_score": 1 / (61 + i)} for i, hit in enumerate(hits)
         ]
@@ -1132,6 +1200,44 @@ async def search_sag2(
         trace[-1]["eligible_count"] = sum(
             1 for c in ranked() if c["jev_score"] >= grade_threshold
         )
+        if hop_planner is not None:
+            # Prefer high-grade passages for extract; also pad with top fusion hits.
+            # Under gated hop0 (orig-only scoring), bridge docs often get grade 0 and
+            # would vanish from the extract pool — then the chain cannot fill E at all.
+            extract_n = max(seed_k, 20)
+            graded = [
+                c
+                for c in ranked()
+                if c.get("jev_score", 0) >= grade_threshold
+            ][:extract_n]
+            seen_ids = {c["id"] for c in graded}
+            padded = list(graded)
+            for c in ranked():
+                if c["id"] in seen_ids:
+                    continue
+                padded.append(c)
+                seen_ids.add(c["id"])
+                if len(padded) >= extract_n:
+                    break
+            # Hop0: also fold baseline retrieval head so MQ hits are visible to extract
+            # even when orig-only grading left them at grade 0.
+            if hop == 0 and baseline:
+                for c in baseline[:extract_n]:
+                    if c["id"] not in seen_ids:
+                        padded.append(c)
+                        seen_ids.add(c["id"])
+            extract_pool = padded or frontier
+            await hop_planner.update_after_hop(
+                index=index, frontier=extract_pool, hop=hop
+            )
+            trace[-1]["hop_anchor"] = {
+                "answers": dict(getattr(hop_planner, "answers", {})),
+                "scoring_anchors_next": (
+                    hop_planner.scoring_anchors()
+                    if hasattr(hop_planner, "scoring_anchors")
+                    else []
+                ),
+            }
     final = ranked()[:candidate_k]
     final = rank_dpp(final[:10], index.diversity_idf) + final[10:]
     result = {
@@ -1142,6 +1248,10 @@ async def search_sag2(
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
         "algorithm": "SAG2",
     }
+    if hop_planner is not None and hasattr(hop_planner, "trace"):
+        result["hop_anchor_trace"] = list(hop_planner.trace)
+        result["hop_anchor_answers"] = dict(getattr(hop_planner, "answers", {}))
+        result["hop_anchor_templates"] = list(getattr(hop_planner, "templates", []))
     if initial_retriever is not None:
         result["initial_retriever"] = initial_retriever.name
         result["retrieval_usage"] = retrieval_usage
